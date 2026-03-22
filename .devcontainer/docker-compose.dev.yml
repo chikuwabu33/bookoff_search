@@ -1,0 +1,26 @@
+services:
+  # Dev Container用 バックエンドサービス
+  backend:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile.dev
+    container_name: bookoff-devcontainer
+    ports:
+      - "8000:8000"
+      - "5678:5678"  # Python debugger
+    volumes:
+      - ../app:/app
+      - /app/__pycache__
+    environment:
+      - DEBUG=True
+      - PYTHONUNBUFFERED=1
+    networks:
+      - bookoff-network
+    stdin_open: true
+    tty: true
+    # devcontainer用に長時間実行を続ける
+    command: /bin/bash
+
+networks:
+  bookoff-network:
+    driver: bridge
