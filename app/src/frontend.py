@@ -493,15 +493,9 @@ def main():
                 if elapsed >= interval * 60:
                     should_run = True
 
-            if st.session_state.last_run_time:
-                # 次回実行までの進捗表示
-                elapsed_sec = (now - st.session_state.last_run_time).total_seconds()
-                total_sec = interval * 60
-                progress = min(1.0, max(0.0, elapsed_sec / total_sec))
-                remaining_sec = max(0, int(total_sec - elapsed_sec))
-                
-                st.progress(progress, text=f"次回の検索まであと {remaining_sec} 秒")
-                st.caption("※ 停止する場合はブラウザをリロードしてください")
+            # 進行状況表示用のプレースホルダー
+            status_container = st.empty()
+            st.caption("※ 停止する場合はブラウザをリロードしてください")
 
     else:
         st.info("📝 左のサイドバーからキーワードを追加してください")
@@ -571,9 +565,29 @@ def main():
                     display_result_card(keyword, st.session_state.stock_results[keyword])
 
     # 自動検索モード時の待機処理 (全ての描画が終わった後に行う)
-    if st.session_state.auto_loop:
-        time.sleep(1)
-        st.rerun()
+    if st.session_state.auto_loop and st.session_state.last_run_time:
+        interval = st.session_state.settings.get("interval_minutes", 60)
+        
+        # カウントダウンループ（再帰呼び出しによるエラー回避のため、ループ内で待機）
+        while True:
+            now = datetime.datetime.now()
+            elapsed = (now - st.session_state.last_run_time).total_seconds()
+            total_sec = interval * 60
+            
+            if elapsed >= total_sec:
+                st.rerun()
+                break
+            
+            # 画面更新
+            remaining_sec = max(0, int(total_sec - elapsed))
+            progress = min(1.0, max(0.0, elapsed / total_sec))
+            
+            try:
+                status_container.progress(progress, text=f"次回の検索まであと {remaining_sec} 秒")
+            except NameError:
+                pass
+                
+            time.sleep(1)
 
 
 if __name__ == "__main__":
