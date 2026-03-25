@@ -10,12 +10,41 @@ import requests
 from bs4 import BeautifulSoup
 import logging
 import time
+import random
 
 # ロギング設定
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="BOOKOFF Search API", version="1.0.0")
+
+# User-Agentリスト（ブラウザ情報を偽装するためにランダムに使用）
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:123.0) Gecko/20100101 Firefox/123.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
+]
+
+def get_random_headers() -> dict:
+    """
+    ランダムなUser-Agentと一般的なブラウザヘッダーを生成して返す
+    これにより、ボットとして検知されるリスクを低減する
+    """
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+        "Referer": "https://shopping.bookoff.co.jp/",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1"
+    }
 
 def fetch_with_retry(url: str, headers: dict, retries: int = 3, backoff_factor: float = 1.0):
     """BOOKOFFリクエスト: エラー(429/5xx/接続拒否など)時のみリトライ"""
@@ -115,10 +144,8 @@ async def search_bookoff(request: SearchRequest):
         # BOOKOFF検索URL
         search_url = f"https://shopping.bookoff.co.jp/search?keyword={query}"
         
-        # ヘッダー設定（User-Agentを指定してブロック回避）
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
+        # ヘッダー設定（ランダムなUser-Agentを使用してブロック回避）
+        headers = get_random_headers()
 
         # BOOKOFFアクセス（エラー状態時のみ3回リトライ）
         response = fetch_with_retry(search_url, headers=headers, retries=3, backoff_factor=1.0)
@@ -215,10 +242,8 @@ async def check_stock(request: SearchRequest):
         # BOOKOFF検索URL
         search_url = f"https://shopping.bookoff.co.jp/search?keyword={keyword}"
         
-        # ヘッダー設定
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
+        # ヘッダー設定（ランダムなUser-Agentを使用）
+        headers = get_random_headers()
         
         # BOOKOFFアクセス（エラー状態時のみ3回リトライ）
         response = fetch_with_retry(search_url, headers=headers, retries=3, backoff_factor=1.0)
