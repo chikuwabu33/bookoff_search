@@ -9,6 +9,8 @@ import json
 import time
 import datetime
 import os
+import urllib.parse
+import re
 from typing import List, Dict
 
 # --- 設定項目 ---
@@ -315,11 +317,16 @@ def display_result_card(keyword: str, result: Dict):
                         if product.get("image_url"):
                             st.write(f"**画像:** {product['image_url'][:80]}")
         else:
+            # キーワード内の括弧をスペースに変換し、末尾にスペースを1つ追加（ユーザーが提示した成功URLの形式）
+            search_query = keyword.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ') + " "
+            encoded_keyword = urllib.parse.quote(search_query)
+            search_url = f"https://shopping.bookoff.co.jp/search/keyword/{encoded_keyword}"
             st.markdown(f"""
                 <div class="error-box">
                 <strong>❌ {keyword}</strong><br>
                 <strong>在庫状況:</strong> なし<br>
-                当サイトに在庫がない商品です。
+                当サイトに在庫がない商品です。<br>
+                URL: <a href="{search_url}" target="_blank">{search_url}</a>
                 </div>
             """, unsafe_allow_html=True)
 

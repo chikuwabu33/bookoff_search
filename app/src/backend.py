@@ -11,12 +11,25 @@ from bs4 import BeautifulSoup
 import logging
 import time
 import random
+import urllib.parse
+import unicodedata
+import re
 
 # ロギング設定
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="BOOKOFF Search API", version="1.0.0")
+
+def normalize_text(text: str) -> str:
+    """比較のためにテキストを正規化（全角半角統一、記号・空白削除、小文字化）"""
+    if not text:
+        return ""
+    # NFKC正規化で全角英数字・記号を半角に変換
+    normalized = unicodedata.normalize('NFKC', text)
+    # 括弧、記号、空白を完全に除去
+    normalized = re.sub(r'[()（）\[\]【】\s\-:：,，.．/／]', '', normalized)
+    return normalized.lower()
 
 # User-Agentリスト（ブラウザ情報を偽装するためにランダムに使用）
 USER_AGENTS = [
@@ -142,7 +155,10 @@ async def search_bookoff(request: SearchRequest):
         logger.info(f"検索開始: {query}")
         
         # BOOKOFF検索URL
-        search_url = f"https://shopping.bookoff.co.jp/search?keyword={query}"
+        # 検索精度向上のため、括弧をスペースに置き換えて検索（Bookoffの検索エンジン仕様への対応）
+        search_query = query.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')
+        encoded_query = urllib.parse.quote(search_query)
+        search_url = f"https://shopping.bookoff.co.jp/search/keyword/{encoded_query}"
         
         # ヘッダー設定（ランダムなUser-Agentを使用してブロック回避）
         headers = get_random_headers()
@@ -156,16 +172,24 @@ async def search_bookoff(request: SearchRequest):
         # 検索結果を抽出
         results = []
         
-        # 商品エレメントを検索（実際のBOOKOFF構造に対応）
+        # 商品エレメントを検索
         items = soup.find_all("div", class_="productItem")
+        logger.info(f"HTMLから抽出されたアイテム数: {len(items)}")
         
-        for item in items[:20]:  # 最初の20件を取得
+        for item in items[:40]:  # 取得件数を少し増やす
             try:
                 # 商品タイトルを抽出
                 title_elem = item.find("p", class_="productItem__title")
                 if not title_elem:
                     continue
                 title = title_elem.get_text(strip=True)
+
+                # 在庫確認: アイテム全体のHTML内に「カート」が含まれているか
+                # (ボタンテキストをより確実に拾うため)
+                has_cart_button = "カート" in item.get_text()
+                if not has_cart_button:
+                    logger.info(f"在庫なしスキップ: {title}")
+                    continue
                 
                 if not title:
                     continue
@@ -187,6 +211,7 @@ async def search_bookoff(request: SearchRequest):
                 image_url = img_elem.get("src", "") if img_elem else ""
                 
                 if title and url:
+                    logger.info(f"在庫あり商品を発見: {title}")
                     results.append(
                         SearchResult(
                             title=title,
@@ -240,7 +265,10 @@ async def check_stock(request: SearchRequest):
         logger.info(f"在庫確認開始: {keyword}")
         
         # BOOKOFF検索URL
-        search_url = f"https://shopping.bookoff.co.jp/search?keyword={keyword}"
+        # 検索精度向上のため、括弧をスペースに置き換えて検索
+        search_query = keyword.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')
+        encoded_keyword = urllib.parse.quote(search_query)
+        search_url = f"https://shopping.bookoff.co.jp/search/keyword/{encoded_keyword}"
         
         # ヘッダー設定（ランダムなUser-Agentを使用）
         headers = get_random_headers()
@@ -254,13 +282,19 @@ async def check_stock(request: SearchRequest):
         # 検索結果を抽出
         results = []
         items = soup.find_all("div", class_="productItem")
+        logger.info(f"在庫確認: アイテム数 {len(items)}")
         
-        for item in items[:30]:  # 最初の30件を確認
+        for item in items[:50]:  # 最初の50件を確認
             try:
                 title_elem = item.find("p", class_="productItem__title")
                 if not title_elem:
                     continue
                 title = title_elem.get_text(strip=True)
+
+                # 在庫判定
+                has_cart_button = "カート" in item.get_text()
+                if not has_cart_button:
+                    continue
                 
                 if not title:
                     continue
@@ -290,19 +324,22 @@ async def check_stock(request: SearchRequest):
                 logger.warning(f"商品情報の抽出エラー: {e}")
                 continue
         
-        # キーワードを単語で分割
-        keywords_parts = keyword.split()
+        # キーワードを「空白」や「括弧」などの記号で細かく分割して判定を柔軟にする
+        # 例: "転生したらスライムだった件(31)" -> ["転生したらスライムだった件", "31"]
+        keywords_parts = re.split(r'[()（）\s]', keyword)
+        normalized_parts = [normalize_text(p) for p in keywords_parts if p]
+        logger.info(f"判定用キーワードパーツ: {normalized_parts}")
         
-        # 完全一致：全てのキーワード部分を含む商品
+        # 全てのキーワードパーツ（タイトルと数字の両方）が含まれているものを抽出
         fully_matching = [
             r for r in results 
-            if all(part in r.title for part in keywords_parts if part)
+            if all(part in normalize_text(r.title) for part in normalized_parts)
         ]
         
         # 部分一致：いずれかのキーワード部分を含む商品
         partial_matching = [
             r for r in results 
-            if any(part in r.title for part in keywords_parts if part)
+            if any(part in normalize_text(r.title) for part in normalized_parts)
         ]
         
         # 結果を判定
