@@ -150,8 +150,8 @@ def initialize_session_state():
         st.session_state.keywords = load_keywords()
     if "settings" not in st.session_state:
         st.session_state.settings = load_settings()
-    if "current_keyword" not in st.session_state:
-        st.session_state.current_keyword = ""
+    if "keyword_input" not in st.session_state:
+        st.session_state.keyword_input = ""
     if "stock_results" not in st.session_state:
         st.session_state.stock_results = None
     if "error_message" not in st.session_state:
@@ -162,19 +162,33 @@ def initialize_session_state():
         st.session_state.last_run_time = None
 
 
-def add_keyword(keyword: str):
-    """キーワードをリストに追加"""
-    keyword = keyword.strip()
-    if keyword and keyword not in st.session_state.keywords:
-        st.session_state.keywords.append(keyword)
-        save_keywords(st.session_state.keywords)
-        st.session_state.current_keyword = ""
-        st.session_state.error_message = None
-        return True
-    elif keyword in st.session_state.keywords:
-        st.session_state.error_message = f"「{keyword}」は既に追加されています"
-        return False
-    return False
+def add_keyword_callback():
+    """キーワードをリストに追加するコールバック関数"""
+    if "keywords" not in st.session_state:
+        st.session_state.keywords = load_keywords()
+
+    keyword = st.session_state.keyword_input.strip()
+    if keyword:
+        if keyword not in st.session_state.keywords:
+            st.session_state.keywords.append(keyword)
+            save_keywords(st.session_state.keywords)
+            # 入力欄をクリア（コールバック内での変更は安全です）
+            st.session_state.keyword_input = ""
+            st.session_state.error_message = None
+        else:
+            st.session_state.error_message = f"「{keyword}」は既に追加されています"
+    else:
+        st.session_state.error_message = "キーワードを入力してください"
+
+
+def trigger_test_notification():
+    """テスト通知を1回だけ実行するコールバック関数"""
+    test_product = "テスト用商品（手動テスト）"
+    test_url = "https://shopping.bookoff.co.jp"
+    if send_webhook_notification(test_product, test_url, force=True):
+        st.toast("✅ テスト通知を送信しました")
+    else:
+        st.toast("❌ テスト通知の送信に失敗しました")
 
 
 def remove_keyword(keyword: str):
@@ -249,6 +263,13 @@ def process_notifications(force: bool = False):
     if in_stock_keywords:
         today_str = datetime.date.today().isoformat()
         
+        # 自動検索（force=False）の場合、今日すでに通知済みならスキップ
+        # 手動検索（force=True）の場合はこのチェックを無視して送信する
+        last_sent_date = st.session_state.settings.get("last_notification_sent_date", "")
+        if not force and last_sent_date == today_str:
+            print(f"[DEBUG] 本日は既に通知済みのため、自動通知をスキップします (日付: {today_str})")
+            return
+
         sent_count = 0
         for k in in_stock_keywords:
             res = st.session_state.stock_results[k]
@@ -372,18 +393,8 @@ def main():
             except Exception as e:
                 st.error(f"❌ バックエンド API: 接続エラー\n{str(e)}")
         
-        if st.button("Webhook通知-テスト送信"):
-            try:
-                # テスト用ダミーデータ
-                test_product = "テスト商品(呪術廻戦)"
-                test_url = "https://shopping.bookoff.co.jp"
-                
-                if send_webhook_notification(test_product, test_url, force=True):
-                    st.success("✅ MacroDroidへ送信成功")
-                else:
-                    st.error("❌ 送信失敗")
-            except Exception as e:
-                st.error(f"❌ 送信エラー: {str(e)}")
+        # テスト通知ボタン（コールバック方式で独立して動作）
+        st.button("Webhook通知-テスト送信", on_click=trigger_test_notification)
 
         st.info(f"📍 API エンドポイント: {BACKEND_URL}")
         
@@ -399,16 +410,7 @@ def main():
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("➕ 追加", use_container_width=True):
-                if new_keyword:
-                    if add_keyword(new_keyword):
-                        st.success(f"✅ 「{new_keyword}」を追加しました")
-                        st.rerun()
-                    else:
-                        if st.session_state.error_message:
-                            st.warning(st.session_state.error_message)
-                else:
-                    st.warning("キーワードを入力してください")
+            st.button("➕ 追加", use_container_width=True, on_click=add_keyword_callback)
         
         with col2:
             if st.button("🗑️ すべてクリア", use_container_width=True):
