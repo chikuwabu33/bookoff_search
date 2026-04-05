@@ -449,6 +449,9 @@ def main():
     
     # メインコンテンツ
     st.header("📊 在庫確認")
+
+    # 進行状況表示用のプレースホルダー (カウントダウンで使用)
+    status_container = st.empty()
     
     # エラーメッセージ表示
     if st.session_state.error_message:
@@ -593,7 +596,7 @@ def main():
             
             try:
                 status_container.progress(progress, text=f"次回の検索まであと {remaining_sec} 秒")
-            except NameError:
+            except Exception:
                 pass
                 
             time.sleep(1)
