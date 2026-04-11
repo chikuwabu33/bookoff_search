@@ -99,6 +99,17 @@ def is_within_search_window() -> bool:
     # SEARCH_END_HOUR は含まない (例: 24なら23:59までOK)
     return SEARCH_START_HOUR <= now_hour < SEARCH_END_HOUR
 
+def get_effective_interval_seconds() -> int:
+    """現在の時刻に基づいた実行間隔（秒）を返す"""
+    # JST (UTC+9) タイムゾーンを指定して現在時刻を取得
+    jst = datetime.timezone(datetime.timedelta(hours=9))
+    now_hour = datetime.datetime.now(jst).hour
+    # 11:00から12:00の間は15秒間隔
+    if 11 <= now_hour < 12:
+        return 15
+    # それ以外は設定値（分）を秒に変換して返す
+    return int(st.session_state.settings.get("interval_minutes", 60) * 60)
+
 
 def send_webhook_notification(product_name: str, product_url: str, force: bool = False) -> bool:
     """
@@ -358,7 +369,7 @@ def main():
     
     # --- 自動検索の実行判定 (描画前) ---
     if st.session_state.auto_loop:
-        interval = st.session_state.settings.get("interval_minutes", 60)
+        current_interval_sec = get_effective_interval_seconds()
         now = datetime.datetime.now()
         should_run = False
         
@@ -366,7 +377,7 @@ def main():
             should_run = True
         else:
             elapsed = (now - st.session_state.last_run_time).total_seconds()
-            if elapsed >= interval * 60:
+            if elapsed >= current_interval_sec:
                 should_run = True
         
         if should_run:
@@ -489,8 +500,9 @@ def main():
                 st.button("🔄 自動検索を開始", use_container_width=True, on_click=start_auto_loop)
 
         if st.session_state.auto_loop:
-            interval = st.session_state.settings.get("interval_minutes", 60)
-            st.success(f"🔄 自動検索モードが有効です (実行間隔: {interval}分)")
+            current_interval_sec = get_effective_interval_seconds()
+            interval_desc = f"{current_interval_sec}秒" if current_interval_sec < 60 else f"{current_interval_sec // 60}分"
+            st.success(f"🔄 自動検索モードが有効です (現在の実行間隔: {interval_desc})")
             
             if not is_within_search_window():
                 st.warning(f"現在時間外です。検索は {SEARCH_START_HOUR}:00～{SEARCH_END_HOUR}:00 の間に行われます。")
@@ -502,7 +514,7 @@ def main():
                 should_run = True
             else:
                 elapsed = (now - st.session_state.last_run_time).total_seconds()
-                if elapsed >= interval * 60:
+                if elapsed >= current_interval_sec:
                     should_run = True
 
             # 進行状況表示用のプレースホルダー
@@ -578,13 +590,11 @@ def main():
 
     # 自動検索モード時の待機処理 (全ての描画が終わった後に行う)
     if st.session_state.auto_loop and st.session_state.last_run_time:
-        interval = st.session_state.settings.get("interval_minutes", 60)
-        
         # カウントダウンループ（再帰呼び出しによるエラー回避のため、ループ内で待機）
         while True:
+            total_sec = get_effective_interval_seconds()
             now = datetime.datetime.now()
             elapsed = (now - st.session_state.last_run_time).total_seconds()
-            total_sec = interval * 60
             
             if elapsed >= total_sec:
                 st.rerun()
