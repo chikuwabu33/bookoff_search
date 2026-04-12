@@ -597,7 +597,6 @@ def main():
             elapsed = (now - st.session_state.last_run_time).total_seconds()
             
             if elapsed >= total_sec:
-                st.rerun()
                 break
             
             # 画面更新
@@ -606,10 +605,14 @@ def main():
             
             try:
                 status_container.progress(progress, text=f"次回の検索まであと {remaining_sec} 秒")
+                time.sleep(1)
+            except (KeyboardInterrupt, SystemExit):
+                raise
             except Exception:
-                pass
-                
-            time.sleep(1)
+                # UI更新エラーなどは無視するが、制御フローは止めない
+                break
+
+        st.rerun()
 
 
 if __name__ == "__main__":
