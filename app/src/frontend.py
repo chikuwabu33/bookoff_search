@@ -61,8 +61,9 @@ BACKEND_URL = "http://backend:8000"
 WEBHOOK_URL = "https://trigger.macrodroid.com/44e2df0f-7ca1-48e3-9d14-74434fa947e8/BOOKOFF"
 
 # キーワード保存用ファイル
-KEYWORDS_FILE = "keywords.json"
-SETTINGS_FILE = "settings.json"
+DATA_DIR = "/app/data"
+KEYWORDS_FILE = os.path.join(DATA_DIR, "keywords.json")
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 
 
 def load_settings() -> Dict:
@@ -84,6 +85,8 @@ def load_settings() -> Dict:
 
 def save_settings(settings: Dict):
     """設定を保存"""
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR)
     try:
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
@@ -147,6 +150,8 @@ def load_keywords() -> List[str]:
 
 def save_keywords(keywords: List[str]):
     """キーワードをファイルに保存"""
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR)
     try:
         with open(KEYWORDS_FILE, "w", encoding="utf-8") as f:
             json.dump(keywords, f, ensure_ascii=False, indent=2)

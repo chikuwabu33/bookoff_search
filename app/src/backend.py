@@ -185,8 +185,9 @@ async def search_bookoff(request: SearchRequest):
                 title = title_elem.get_text(strip=True)
 
                 # 在庫確認: アイテム全体のHTML内に「カート」が含まれているか
-                # (ボタンテキストをより確実に拾うため)
-                has_cart_button = "カート" in item.get_text()
+                # ボタン要素(aタグやbuttonタグ)に限定して「カート」を探すことで、説明文との混同を防ぐ
+                buttons_text = "".join([btn.get_text() for btn in item.find_all(['a', 'button'])])
+                has_cart_button = "カート" in buttons_text
                 if not has_cart_button:
                     logger.info(f"在庫なしスキップ: {title}")
                     continue
@@ -292,7 +293,8 @@ async def check_stock(request: SearchRequest):
                 title = title_elem.get_text(strip=True)
 
                 # 在庫判定
-                has_cart_button = "カート" in item.get_text()
+                buttons_text = "".join([btn.get_text() for btn in item.find_all(['a', 'button'])])
+                has_cart_button = "カート" in buttons_text
                 if not has_cart_button:
                     continue
                 
