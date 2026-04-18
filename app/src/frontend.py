@@ -148,6 +148,18 @@ def get_match_history(limit: int = 50) -> List[Dict]:
         logger.error(f"Error reading history: {e}")
         return []
 
+def clear_match_history():
+    """DB2 (発見履歴) をすべて削除"""
+    try:
+        if os.path.exists(DB2_PATH):
+            with sqlite3.connect(DB2_PATH) as conn:
+                conn.execute("DELETE FROM match_logs")
+            return True, "発見履歴をすべて削除しました"
+        return False, "データベースファイルが見つかりません"
+    except Exception as e:
+        logger.error(f"Error clearing history: {e}")
+        return False, f"削除中にエラーが発生しました: {e}"
+
 
 def export_db_to_csv(db_path: str, table_name: str, output_path: str):
     """DBの内容をBOM付きUTF-8のCSVで出力"""
@@ -194,6 +206,16 @@ def handle_export_match_logs(export_dir: str):
     success, msg = export_db_to_csv(DB2_PATH, "match_logs", path)
     if success:
         st.toast(msg)
+    else:
+        st.error(msg)
+
+def handle_clear_match_logs():
+    """発見記録ログ(DB2)をクリアするコールバック"""
+    success, msg = clear_match_history()
+    if success:
+        st.toast(msg)
+        if "show_history" in st.session_state:
+            st.session_state.show_history = None
     else:
         st.error(msg)
 
@@ -564,6 +586,9 @@ def main():
             
         st.button("発見記録ログ出力 (DB2)", use_container_width=True, 
                   on_click=handle_export_match_logs, args=(export_dir,))
+
+        st.button("🗑️ 発見記録をすべて消去 (DB2)", use_container_width=True, 
+                  on_click=handle_clear_match_logs)
 
         if st.button("📋 発見履歴を画面に表示 (DB2)", use_container_width=True):
             history = get_match_history()

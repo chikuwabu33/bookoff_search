@@ -15,3 +15,5 @@ Thumbs.db
 # App Data (Runtime changes & User Settings)
 data/*.db
 data/*.json
+logs/*.csv
+data/settings.json
