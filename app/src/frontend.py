@@ -148,6 +148,35 @@ def get_match_history(limit: int = 50) -> List[Dict]:
         logger.error(f"Error reading history: {e}")
         return []
 
+def get_api_logs(limit: int = 50) -> List[Dict]:
+    """DB1から最近のAPI実行ログを取得"""
+    if not os.path.exists(DB1_PATH):
+        return []
+    try:
+        with sqlite3.connect(DB1_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                "SELECT timestamp, endpoint, status FROM api_logs ORDER BY timestamp DESC LIMIT ?", 
+                (limit,)
+            )
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Error reading api logs: {e}")
+        return []
+
+def clear_api_logs():
+    """DB1 (API状況ログ) をすべて削除"""
+    try:
+        if os.path.exists(DB1_PATH):
+            with sqlite3.connect(DB1_PATH) as conn:
+                conn.execute("DELETE FROM api_logs")
+            return True, "API状況ログをすべて削除しました"
+        return False, "データベースファイルが見つかりません"
+    except Exception as e:
+        logger.error(f"Error clearing api logs: {e}")
+        return False, f"削除中にエラーが発生しました: {e}"
+
 def clear_match_history():
     """DB2 (発見履歴) をすべて削除"""
     try:
@@ -286,6 +315,12 @@ def initialize_session_state():
         st.session_state.error_message = None
     if "auto_loop" not in st.session_state:
         st.session_state.auto_loop = False
+    if "show_api_logs" not in st.session_state:
+        st.session_state.show_api_logs = None
+    if "confirm_delete_db1" not in st.session_state:
+        st.session_state.confirm_delete_db1 = False
+    if "confirm_delete_db2" not in st.session_state:
+        st.session_state.confirm_delete_db2 = False
     if "last_run_time" not in st.session_state:
         st.session_state.last_run_time = None
 
@@ -586,7 +621,7 @@ def main():
         st.header("💾 ログ出力 (CSV)")
         
         # key を指定することで値の変更を確実に検知し、callbackに渡せるようにします
-        export_dir = st.text_input("CSV保存フォルダパス", value="/app/logs", key="export_path_input")
+        export_dir = st.text_input("ログ保存フォルダパス", value="/app/logs", key="export_path_input")
         
         st.button("API状況ログ出力 (DB1)", use_container_width=True, 
                   on_click=handle_export_api_logs, args=(export_dir,))
@@ -594,15 +629,54 @@ def main():
         st.button("発見記録ログ出力 (DB2)", use_container_width=True, 
                   on_click=handle_export_match_logs, args=(export_dir,))
 
-        st.button("🗑️ 発見記録をすべて消去 (DB2)", use_container_width=True, 
-                  on_click=handle_clear_match_logs)
+        st.markdown("---")
+        # API状況表示 (DB1)
+        if st.button("📋 API状況を画面に表示 (DB1)", use_container_width=True):
+            st.session_state.show_api_logs = get_api_logs()
+            st.session_state.show_history = None
 
+        # 発見履歴表示 (DB2)
         if st.button("📋 発見履歴を画面に表示 (DB2)", use_container_width=True):
             history = get_match_history()
-            if history:
-                st.session_state.show_history = history
-            else:
-                st.toast("履歴が見つかりませんでした")
+            st.session_state.show_history = history if history else []
+            st.session_state.show_api_logs = None
+
+        st.markdown("---")
+        # 削除ボタン (DB1)
+        if st.button("🗑️ API状況ログを消去 (DB1)", use_container_width=True):
+            st.session_state.confirm_delete_db1 = True
+        
+        if st.session_state.confirm_delete_db1:
+            st.warning("DB1のログをすべて消去しますか？")
+            c1, c2 = st.columns(2)
+            if c1.button("はい、削除 (DB1)", key="db1_yes", use_container_width=True):
+                success, msg = clear_api_logs()
+                st.session_state.confirm_delete_db1 = False
+                st.session_state.show_api_logs = None
+                if success: st.toast(msg)
+                else: st.error(msg)
+                st.rerun()
+            if c2.button("いいえ", key="db1_no", use_container_width=True):
+                st.session_state.confirm_delete_db1 = False
+                st.rerun()
+
+        # 削除ボタン (DB2)
+        if st.button("🗑️ 発見履歴を消去 (DB2)", use_container_width=True):
+            st.session_state.confirm_delete_db2 = True
+
+        if st.session_state.confirm_delete_db2:
+            st.warning("DB2の履歴をすべて消去しますか？")
+            c1, c2 = st.columns(2)
+            if c1.button("はい、削除 (DB2)", key="db2_yes", use_container_width=True):
+                success, msg = clear_match_history()
+                st.session_state.confirm_delete_db2 = False
+                st.session_state.show_history = None
+                if success: st.toast(msg)
+                else: st.error(msg)
+                st.rerun()
+            if c2.button("いいえ", key="db2_no", use_container_width=True):
+                st.session_state.confirm_delete_db2 = False
+                st.rerun()
     
     # メインコンテンツ
     st.header("📊 在庫確認")
@@ -672,14 +746,38 @@ def main():
     else:
         st.info("📝 左のサイドバーからキーワードを追加してください")
     
+    # API状況ログの表示
+    if "show_api_logs" in st.session_state and st.session_state.show_api_logs is not None:
+        st.markdown("---")
+        st.subheader("📊 API状況ログ (DB1)")
+        if st.session_state.show_api_logs:
+            # 30行を超えたらスクロールを表示 (1行約35pxとして計算)
+            st.dataframe(
+                st.session_state.show_api_logs,
+                use_container_width=True,
+                height=1085 if len(st.session_state.show_api_logs) > 30 else None,
+                hide_index=True
+            )
+        else:
+            st.write("データなし")
+        if st.button("APIログ表示を閉じる"):
+            st.session_state.show_api_logs = None
+            st.rerun()
+
     # 発見履歴の表示 (ボタンが押された場合のみ)
-    if "show_history" in st.session_state and st.session_state.show_history:
+    if "show_history" in st.session_state and st.session_state.show_history is not None:
         st.markdown("---")
         st.subheader("📜 最近の発見履歴 (DB2)")
         if st.session_state.show_history:
-            st.table(st.session_state.show_history)
+            # 30行を超えたらスクロールを表示 (1行約35pxとして計算)
+            st.dataframe(
+                st.session_state.show_history,
+                use_container_width=True,
+                height=1085 if len(st.session_state.show_history) > 30 else None,
+                hide_index=True
+            )
         else:
-            st.write("履歴はありません。")
+            st.write("データなし")
             
         if st.button("履歴表示を閉じる"):
             st.session_state.show_history = None
