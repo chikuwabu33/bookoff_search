@@ -16,4 +16,3 @@ Thumbs.db
 data/*.db
 data/*.json
 logs/*.csv
-data/settings.json

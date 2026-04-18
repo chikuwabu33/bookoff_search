@@ -54,9 +54,21 @@ def log_api_call(endpoint: str, status: int):
         logger.error(f"DB1 Logging Error: {e}")
 
 def log_match_found(keyword: str, title: str):
-    """発見した書籍をDB2に記録"""
+    """
+    発見した書籍をDB2に記録
+    同じタイトルのものは1時間に1回のみ記録する
+    """
     try:
         with sqlite3.connect(DB2_PATH) as conn:
+            # 1時間以内に同じタイトルが記録されているかチェック
+            cursor = conn.execute(
+                "SELECT 1 FROM match_logs WHERE title = ? AND timestamp > datetime('now', 'localtime', '-1 hour') LIMIT 1",
+                (title,)
+            )
+            if cursor.fetchone():
+                logger.info(f"DB記録スキップ (1時間以内の重複): {title}")
+                return
+            
             conn.execute("INSERT INTO match_logs (keyword, title) VALUES (?, ?)", (keyword, title))
     except Exception as e:
         logger.error(f"DB2 Logging Error: {e}")
