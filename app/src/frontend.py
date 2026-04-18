@@ -605,7 +605,9 @@ def main():
         
         with col_act2:
             if st.session_state.auto_loop:
-                st.warning("自動検索中 (停止はリロード)")
+                if st.button("⏹️ 自動検索を停止", use_container_width=True, type="secondary"):
+                    st.session_state.auto_loop = False
+                    st.rerun()
             else:
                 def start_auto_loop():
                     st.session_state.auto_loop = True
@@ -633,7 +635,7 @@ def main():
 
             # 進行状況表示用のプレースホルダー
             status_container = st.empty()
-            st.caption("※ 停止する場合はブラウザをリロードしてください")
+            st.caption("※ 自動検索実行中。上の停止ボタンで解除できます。")
 
     else:
         st.info("📝 左のサイドバーからキーワードを追加してください")
@@ -642,7 +644,11 @@ def main():
     if "show_history" in st.session_state and st.session_state.show_history:
         st.markdown("---")
         st.subheader("📜 最近の発見履歴 (DB2)")
-        st.table(st.session_state.show_history)
+        if st.session_state.show_history:
+            st.table(st.session_state.show_history)
+        else:
+            st.write("履歴はありません。")
+            
         if st.button("履歴表示を閉じる"):
             st.session_state.show_history = None
             st.rerun()
@@ -712,7 +718,7 @@ def main():
                     display_result_card(keyword, st.session_state.stock_results[keyword])
 
     # 自動検索モード時の待機処理 (全ての描画が終わった後に行う)
-    if st.session_state.auto_loop and st.session_state.last_run_time:
+    if st.session_state.auto_loop and st.session_state.last_run_time and is_within_search_window():
         # カウントダウンループ（再帰呼び出しによるエラー回避のため、ループ内で待機）
         while True:
             total_sec = get_effective_interval_seconds()

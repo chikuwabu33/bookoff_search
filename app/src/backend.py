@@ -200,8 +200,9 @@ async def search_bookoff(request: SearchRequest):
         
         # BOOKOFF検索URL
         # 検索精度向上のため、括弧をスペースに置き換えて検索（Bookoffの検索エンジン仕様への対応）
-        search_query = query.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')
-        encoded_query = urllib.parse.quote(search_query)
+        # 末尾にスペースを追加することで検索ヒット率を向上させる
+        search_query = re.sub(r'\s+', ' ', query.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')).strip() + " "
+        encoded_query = urllib.parse.quote(search_query).replace('%20', '+')
         search_url = f"https://shopping.bookoff.co.jp/search/keyword/{encoded_query}"
         
         # ヘッダー設定（ランダムなUser-Agentを使用してブロック回避）
@@ -227,11 +228,12 @@ async def search_bookoff(request: SearchRequest):
                 if not title_elem:
                     continue
                 title = title_elem.get_text(strip=True)
+                if not title:
+                    title = title_elem.get('title', '')
 
-                # 在庫確認: アイテム全体のHTML内に「カート」が含まれているか
-                # ボタン要素(aタグやbuttonタグ)に限定して「カート」を探すことで、説明文との混同を防ぐ
-                buttons_text = "".join([btn.get_text() for btn in item.find_all(['a', 'button'])])
-                has_cart_button = "カート" in buttons_text
+                # 在庫判定: 「カート」の文字が存在し、かつ「在庫なし」「品切れ」が含まれないことを確認
+                item_text = item.get_text()
+                has_cart_button = "カート" in item_text and "在庫なし" not in item_text and "品切れ" not in item_text
                 if not has_cart_button:
                     logger.info(f"在庫なしスキップ: {title}")
                     continue
@@ -314,8 +316,8 @@ async def check_stock(request: SearchRequest):
         
         # BOOKOFF検索URL
         # 検索精度向上のため、括弧をスペースに置き換えて検索
-        search_query = keyword.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')
-        encoded_keyword = urllib.parse.quote(search_query)
+        search_query = re.sub(r'\s+', ' ', keyword.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')).strip() + " "
+        encoded_keyword = urllib.parse.quote(search_query).replace('%20', '+')
         search_url = f"https://shopping.bookoff.co.jp/search/keyword/{encoded_keyword}"
         
         # ヘッダー設定（ランダムなUser-Agentを使用）
@@ -338,10 +340,12 @@ async def check_stock(request: SearchRequest):
                 if not title_elem:
                     continue
                 title = title_elem.get_text(strip=True)
+                if not title:
+                    title = title_elem.get('title', '')
 
                 # 在庫判定
-                buttons_text = "".join([btn.get_text() for btn in item.find_all(['a', 'button'])])
-                has_cart_button = "カート" in buttons_text
+                item_text = item.get_text()
+                has_cart_button = "カート" in item_text and "在庫なし" not in item_text and "品切れ" not in item_text
                 if not has_cart_button:
                     continue
                 

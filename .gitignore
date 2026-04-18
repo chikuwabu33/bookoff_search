@@ -13,5 +13,5 @@ env/
 Thumbs.db
 
 # App Data (Runtime changes & User Settings)
-app/keywords.json
-app/settings.json
+data/*.db
+data/*.json
