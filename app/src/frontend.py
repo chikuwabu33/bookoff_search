@@ -303,6 +303,10 @@ def add_keyword_callback():
             # 入力欄をクリア（コールバック内での変更は安全です）
             st.session_state.keyword_input = ""
             st.session_state.error_message = None
+            
+            # 自動検索モードが有効な場合、即座に検索が走るようにタイマーをリセット
+            if st.session_state.get("auto_loop"):
+                st.session_state.last_run_time = None
         else:
             st.session_state.error_message = f"「{keyword}」は既に追加されています"
     else:
@@ -324,6 +328,9 @@ def remove_keyword(keyword: str):
     if keyword in st.session_state.keywords:
         st.session_state.keywords.remove(keyword)
         save_keywords(st.session_state.keywords)
+        # 検索結果からも削除して即座に画面表示を更新
+        if st.session_state.stock_results and keyword in st.session_state.stock_results:
+            del st.session_state.stock_results[keyword]
         st.session_state.error_message = None
         return True
     return False
