@@ -9,9 +9,20 @@ import json
 import time
 import datetime
 import os
+import logging
 import urllib.parse
 import re
+import sqlite3
+import csv
 from typing import List, Dict
+
+# ロギング設定
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 # --- 設定項目 ---
 # 自動検索を実行する時間帯 (24時間表記)
@@ -57,14 +68,17 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # バックエンド API URL
-BACKEND_URL = "http://backend:8000"
+BACKEND_URL = "http://bookoff_search_backend:8000"
 WEBHOOK_URL = "https://trigger.macrodroid.com/44e2df0f-7ca1-48e3-9d14-74434fa947e8/BOOKOFF"
 
 # キーワード保存用ファイル
-DATA_DIR = "/app/data"
+DATA_DIR = os.getenv("DATA_DIR", "data")
 KEYWORDS_FILE = os.path.join(DATA_DIR, "keywords.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
+DB1_PATH = os.path.join(DATA_DIR, "api_logs.db")
+DB2_PATH = os.path.join(DATA_DIR, "match_logs.db")
 
+os.makedirs(DATA_DIR, exist_ok=True)
 
 def load_settings() -> Dict:
     """設定を読み込む"""
@@ -72,14 +86,17 @@ def load_settings() -> Dict:
         "interval_minutes": 60,
         "last_notification_sent_date": ""
     }
+    abs_path = os.path.abspath(SETTINGS_FILE)
+    logger.info(f"Attempting to load settings from: {abs_path}")
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
                 default_settings.update(saved)
+                logger.info(f"Settings successfully loaded from {abs_path}")
                 return default_settings
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error loading settings: {e}")
     return default_settings
 
 
@@ -91,7 +108,7 @@ def save_settings(settings: Dict):
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"Error saving settings: {e}")
+        logger.error(f"Error saving settings: {e}")
 
 
 def is_within_search_window() -> bool:
@@ -114,12 +131,79 @@ def get_effective_interval_seconds() -> int:
     return int(st.session_state.settings.get("interval_minutes", 60) * 60)
 
 
+def get_match_history(limit: int = 50) -> List[Dict]:
+    """DB2から最近の発見履歴を取得"""
+    if not os.path.exists(DB2_PATH):
+        return []
+    try:
+        with sqlite3.connect(DB2_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                "SELECT timestamp, keyword, title FROM match_logs ORDER BY timestamp DESC LIMIT ?", 
+                (limit,)
+            )
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Error reading history: {e}")
+        return []
+
+
+def export_db_to_csv(db_path: str, table_name: str, output_path: str):
+    """DBの内容をBOM付きUTF-8のCSVで出力"""
+    try:
+        if not os.path.exists(db_path):
+            return False, f"データベースファイルが見つかりません: {db_path}"
+        
+        # 出力先のディレクトリ作成
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(f"SELECT * FROM {table_name}")
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return False, "データがありません。"
+
+            with open(output_path, 'w', encoding='utf-8-sig', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows([dict(row) for row in rows])
+        
+        return True, f"成功: {output_path} に保存しました"
+    except Exception as e:
+        return False, f"エラー: {str(e)}"
+
+
+def handle_export_api_logs(export_dir: str):
+    """API状況ログ(DB1)をCSVに出力するコールバック"""
+    filename = f"api_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    path = os.path.join(export_dir, filename)
+    success, msg = export_db_to_csv(DB1_PATH, "api_logs", path)
+    if success:
+        st.toast(msg)
+    else:
+        st.error(msg)
+
+
+def handle_export_match_logs(export_dir: str):
+    """発見記録ログ(DB2)をCSVに出力するコールバック"""
+    filename = f"match_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    path = os.path.join(export_dir, filename)
+    success, msg = export_db_to_csv(DB2_PATH, "match_logs", path)
+    if success:
+        st.toast(msg)
+    else:
+        st.error(msg)
+
+
 def send_webhook_notification(product_name: str, product_url: str, force: bool = False) -> bool:
     """
     MacroDroidへ通知を送信
     """
     try:
-        print(f"[DEBUG] MacroDroid通知送信開始: {product_name}")
+        logger.info(f"MacroDroid通知送信開始: {product_name}")
         params = {
             "product": product_name,
             "url": product_url
@@ -127,24 +211,30 @@ def send_webhook_notification(product_name: str, product_url: str, force: bool =
         # POSTからGETに変更 (MacroDroidのWebhookはGETリクエストでのパラメータ受け渡しが標準的です)
         response = requests.get(WEBHOOK_URL, params=params, timeout=10)
         if response.status_code == 200:
-            print("[DEBUG] MacroDroid通知送信成功")
+            logger.info("MacroDroid通知送信成功")
             return True
         else:
-            print(f"[ERROR] MacroDroid通知送信失敗: {response.status_code} {response.text}")
+            logger.error(f"MacroDroid通知送信失敗: {response.status_code} {response.text}")
             return False
     except Exception as e:
-        print(f"[ERROR] MacroDroid通知送信エラー: {str(e)}")
+        logger.error(f"MacroDroid通知送信エラー: {str(e)}")
         return False
 
 
 def load_keywords() -> List[str]:
     """保存されたキーワードを読み込む"""
+    abs_path = os.path.abspath(KEYWORDS_FILE)
+    logger.info(f"Attempting to load keywords from: {abs_path}")
     if os.path.exists(KEYWORDS_FILE):
         try:
             with open(KEYWORDS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
+                keywords = json.load(f)
+                logger.info(f"Keywords successfully loaded: {len(keywords)} items from {abs_path}")
+                return keywords
+        except Exception as e:
+            logger.error(f"Error loading keywords: {e}")
             return []
+    logger.warning(f"Keywords file not found at: {abs_path}")
     return []
 
 
@@ -156,7 +246,7 @@ def save_keywords(keywords: List[str]):
         with open(KEYWORDS_FILE, "w", encoding="utf-8") as f:
             json.dump(keywords, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"Error saving keywords: {e}")
+        logger.error(f"Error saving keywords: {e}")
 
 
 # セッションステートの初期化
@@ -264,9 +354,9 @@ def check_all_keywords():
 
 def process_notifications(force: bool = False):
     """在庫あり商品の通知処理を実行"""
-    print("[DEBUG] 通知処理を開始します")
+    logger.info("通知処理を開始します")
     if not st.session_state.stock_results:
-        print("[DEBUG] 在庫検索結果が空のため通知処理をスキップします")
+        logger.info("在庫検索結果が空のため通知処理をスキップします")
         return
 
     # 通知判定 (在庫あり)
@@ -274,7 +364,7 @@ def process_notifications(force: bool = False):
         k for k, r in st.session_state.stock_results.items()
         if not r.get("error") and r.get("in_stock")
     ]
-    print(f"[DEBUG] 在庫あり件数: {len(in_stock_keywords)}")
+    logger.info(f"在庫あり件数: {len(in_stock_keywords)}")
     
     if in_stock_keywords:
         today_str = datetime.date.today().isoformat()
@@ -283,7 +373,7 @@ def process_notifications(force: bool = False):
         # 手動検索（force=True）の場合はこのチェックを無視して送信する
         last_sent_date = st.session_state.settings.get("last_notification_sent_date", "")
         if not force and last_sent_date == today_str:
-            print(f"[DEBUG] 本日は既に通知済みのため、自動通知をスキップします (日付: {today_str})")
+            logger.info(f"本日は既に通知済みのため、自動通知をスキップします (日付: {today_str})")
             return
 
         sent_count = 0
@@ -462,6 +552,25 @@ def main():
             if st.button("💾 設定を保存", use_container_width=True):
                 save_settings(st.session_state.settings)
                 st.success("設定を保存しました")
+
+        st.markdown("---")
+        st.header("💾 ログ出力 (CSV)")
+        
+        # key を指定することで値の変更を確実に検知し、callbackに渡せるようにします
+        export_dir = st.text_input("CSV保存フォルダパス", value="/app/logs", key="export_path_input")
+        
+        st.button("API状況ログ出力 (DB1)", use_container_width=True, 
+                  on_click=handle_export_api_logs, args=(export_dir,))
+            
+        st.button("発見記録ログ出力 (DB2)", use_container_width=True, 
+                  on_click=handle_export_match_logs, args=(export_dir,))
+
+        if st.button("📋 発見履歴を画面に表示 (DB2)", use_container_width=True):
+            history = get_match_history()
+            if history:
+                st.session_state.show_history = history
+            else:
+                st.toast("履歴が見つかりませんでした")
     
     # メインコンテンツ
     st.header("📊 在庫確認")
@@ -529,6 +638,15 @@ def main():
     else:
         st.info("📝 左のサイドバーからキーワードを追加してください")
     
+    # 発見履歴の表示 (ボタンが押された場合のみ)
+    if "show_history" in st.session_state and st.session_state.show_history:
+        st.markdown("---")
+        st.subheader("📜 最近の発見履歴 (DB2)")
+        st.table(st.session_state.show_history)
+        if st.button("履歴表示を閉じる"):
+            st.session_state.show_history = None
+            st.rerun()
+
     # 結果表示
     if st.session_state.stock_results:
         st.markdown("---")

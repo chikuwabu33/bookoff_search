@@ -1,51 +1,26 @@
+version: '3.8'
+
 services:
-  # FastAPI バックエンドサービス
-  backend:
+  bookoff_search_backend:
     build:
       context: .
       dockerfile: backend.Dockerfile
-    container_name: bookoff-backend
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - DATA_DIR=/app/data
     ports:
       - "8000:8000"
-    volumes:
-      - ./app:/app
-      - /app/__pycache__
-    environment:
-      - DEBUG=True
-      - PYTHONUNBUFFERED=1
-    # ソースコードが src フォルダにあるため、起動コマンドを指定
-    command: uvicorn src.backend:app --host 0.0.0.0 --port 8000 --reload
-    networks:
-      - bookoff-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
 
-  # Streamlit フロントエンドサービス
-  frontend:
+  bookoff_search_frontend:
     build:
       context: .
       dockerfile: frontend.Dockerfile
-    container_name: bookoff-frontend
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - DATA_DIR=/app/data
     ports:
       - "8501:8501"
-    volumes:
-      - ./app:/app
-      - /app/__pycache__
-    environment:
-      - DEBUG=True
-      - PYTHONUNBUFFERED=1
-    # ソースコードが app/src に移動したため、正しいパスで起動コマンドを指定
-    command: streamlit run src/frontend.py --server.port 8501 --server.address 0.0.0.0
-    networks:
-      - bookoff-network
-    depends_on:
-      backend:
-        condition: service_healthy
-
-networks:
-  bookoff-network:
-    driver: bridge

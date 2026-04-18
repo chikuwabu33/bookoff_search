@@ -14,12 +14,56 @@ import random
 import urllib.parse
 import unicodedata
 import re
+import sqlite3
+import os
+from datetime import datetime
 
 # ロギング設定
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
+# データベース設定
+DATA_DIR = os.getenv("DATA_DIR", "data")
+ABS_DATA_DIR = os.path.abspath(DATA_DIR)
+DB1_PATH = os.path.join(DATA_DIR, "api_logs.db")
+DB2_PATH = os.path.join(DATA_DIR, "match_logs.db")
+
+def init_dbs():
+    """データベースとテーブルの初期化"""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    # DB1: API実行状況 (3日間保持)
+    with sqlite3.connect(DB1_PATH) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS api_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT (DATETIME('now', 'localtime')), endpoint TEXT, status INTEGER)")
+    # DB2: 在庫発見記録 (永続保持)
+    with sqlite3.connect(DB2_PATH) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS match_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT (DATETIME('now', 'localtime')), keyword TEXT, title TEXT)")
+    logger.info(f"Databases initialized at: {os.path.abspath(DATA_DIR)}")
+
+def log_api_call(endpoint: str, status: int):
+    """API実行状況をDB1に記録し、3日以上前のログを削除"""
+    try:
+        with sqlite3.connect(DB1_PATH) as conn:
+            conn.execute("INSERT INTO api_logs (endpoint, status) VALUES (?, ?)", (endpoint, status))
+            # 3日分を過ぎたレコードを削除
+            conn.execute("DELETE FROM api_logs WHERE timestamp < datetime('now', 'localtime', '-3 days')")
+    except Exception as e:
+        logger.error(f"DB1 Logging Error: {e}")
+
+def log_match_found(keyword: str, title: str):
+    """発見した書籍をDB2に記録"""
+    try:
+        with sqlite3.connect(DB2_PATH) as conn:
+            conn.execute("INSERT INTO match_logs (keyword, title) VALUES (?, ?)", (keyword, title))
+    except Exception as e:
+        logger.error(f"DB2 Logging Error: {e}")
+
 app = FastAPI(title="BOOKOFF Search API", version="1.0.0")
+
+init_dbs()
 
 def normalize_text(text: str) -> str:
     """比較のためにテキストを正規化（全角半角統一、記号・空白削除、小文字化）"""
@@ -227,6 +271,7 @@ async def search_bookoff(request: SearchRequest):
         
         logger.info(f"検索完了: {len(results)} 件の結果を取得")
         
+        log_api_call("/api/search", 200)
         return SearchResponse(
             query=query,
             count=len(results),
@@ -241,6 +286,8 @@ async def search_bookoff(request: SearchRequest):
         )
     except Exception as e:
         logger.error(f"エラー: {e}")
+        if hasattr(e, 'status_code'):
+            log_api_call("/api/search", e.status_code)
         raise HTTPException(status_code=500, detail=f"検索処理でエラーが発生しました: {str(e)}")
 
 
@@ -347,6 +394,9 @@ async def check_stock(request: SearchRequest):
         # 結果を判定
         if fully_matching:
             logger.info(f"在庫確認完了: {keyword} - 完全一致 {len(fully_matching)} 件")
+            for r in fully_matching:
+                log_match_found(keyword, r.title)
+            log_api_call("/api/stock", 200)
             return StockCheckResponse(
                 keyword=keyword,
                 in_stock=True,
@@ -356,6 +406,9 @@ async def check_stock(request: SearchRequest):
             )
         elif partial_matching:
             logger.info(f"在庫確認完了: {keyword} - 部分一致 {len(partial_matching)} 件")
+            for r in partial_matching:
+                log_match_found(keyword, r.title)
+            log_api_call("/api/stock", 200)
             return StockCheckResponse(
                 keyword=keyword,
                 in_stock=True,
@@ -365,6 +418,7 @@ async def check_stock(request: SearchRequest):
             )
         else:
             logger.info(f"在庫確認完了: {keyword} - 在庫なし")
+            log_api_call("/api/stock", 200)
             return StockCheckResponse(
                 keyword=keyword,
                 in_stock=False,
@@ -381,6 +435,8 @@ async def check_stock(request: SearchRequest):
         )
     except Exception as e:
         logger.error(f"エラー: {e}")
+        if hasattr(e, 'status_code'):
+            log_api_call("/api/stock", e.status_code)
         raise HTTPException(status_code=500, detail=f"在庫確認処理でエラーが発生しました: {str(e)}")
 
 
