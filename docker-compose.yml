@@ -10,6 +10,7 @@ services:
       - ./logs:/app/logs
     environment:
       - DATA_DIR=/app/data
+      - TZ=Asia/Tokyo
     ports:
       - "8000:8000"
 
@@ -22,5 +23,6 @@ services:
       - ./logs:/app/logs
     environment:
       - DATA_DIR=/app/data
+      - TZ=Asia/Tokyo
     ports:
       - "8501:8501"
