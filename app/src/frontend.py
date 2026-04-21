@@ -24,11 +24,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- 設定項目 ---
+# --- デフォルト設定項目 ---
 # 自動検索を実行する時間帯 (24時間表記)
 # この時間帯以外では、自動検索が有効でもAPI呼び出しは行われません。
-SEARCH_START_HOUR = 8  # 検索を開始する時刻 (例: 8 = 午前8時)
-SEARCH_END_HOUR = 17 # 検索を終了する時刻 (例: 24 = 23:59まで実行)
+DEFAULT_SEARCH_START_HOUR = 8  # 検索を開始する時刻 (例: 8 = 午前8時)
+DEFAULT_SEARCH_END_HOUR = 17 # 検索を終了する時刻 (例: 24 = 23:59まで実行)
 # --- 設定項目ここまで ---
 
 # ページ設定
@@ -84,7 +84,9 @@ def load_settings() -> Dict:
     """設定を読み込む"""
     default_settings = {
         "interval_minutes": 60,
-        "last_notification_sent_date": ""
+        "last_notification_sent_date": "",
+        "search_start_hour": DEFAULT_SEARCH_START_HOUR,
+        "search_end_hour": DEFAULT_SEARCH_END_HOUR
     }
     abs_path = os.path.abspath(SETTINGS_FILE)
     logger.info(f"Attempting to load settings from: {abs_path}")
@@ -116,8 +118,11 @@ def is_within_search_window() -> bool:
     # JST (UTC+9) タイムゾーンを指定して現在時刻を取得
     jst = datetime.timezone(datetime.timedelta(hours=9))
     now_hour = datetime.datetime.now(jst).hour
-    # SEARCH_END_HOUR は含まない (例: 24なら23:59までOK)
-    return SEARCH_START_HOUR <= now_hour < SEARCH_END_HOUR
+    # 設定値から開始・終了時刻を取得
+    search_start_hour = int(st.session_state.settings.get("search_start_hour", DEFAULT_SEARCH_START_HOUR))
+    search_end_hour = int(st.session_state.settings.get("search_end_hour", DEFAULT_SEARCH_END_HOUR))
+    # search_end_hour は含まない (例: 24なら23:59までOK)
+    return search_start_hour <= now_hour < search_end_hour
 
 def get_effective_interval_seconds() -> int:
     """現在の時刻に基づいた実行間隔（秒）を返す"""
@@ -613,6 +618,28 @@ def main():
                 value=int(st.session_state.settings.get("interval_minutes", 60))
             )
             
+            # 開始時刻と終了時刻の設定
+            col1, col2 = st.columns(2)
+            with col1:
+                start_hour = st.number_input(
+                    "開始時刻 (時)",
+                    min_value=0,
+                    max_value=23,
+                    value=int(st.session_state.settings.get("search_start_hour", DEFAULT_SEARCH_START_HOUR))
+                )
+                st.session_state.settings["search_start_hour"] = start_hour
+            
+            with col2:
+                end_hour = st.number_input(
+                    "終了時刻 (時)",
+                    min_value=0,
+                    max_value=24,
+                    value=int(st.session_state.settings.get("search_end_hour", DEFAULT_SEARCH_END_HOUR))
+                )
+                st.session_state.settings["search_end_hour"] = end_hour
+            
+            st.caption(f"検索実行時間帯: {int(st.session_state.settings['search_start_hour'])}:00 ～ {int(st.session_state.settings['search_end_hour'])}:00")
+            
             if st.button("💾 設定を保存", use_container_width=True):
                 save_settings(st.session_state.settings)
                 st.success("設定を保存しました")
@@ -727,7 +754,9 @@ def main():
             st.success(f"🔄 自動検索モードが有効です (現在の実行間隔: {interval_desc})")
             
             if not is_within_search_window():
-                st.warning(f"現在時間外です。検索は {SEARCH_START_HOUR}:00～{SEARCH_END_HOUR}:00 の間に行われます。")
+                search_start_hour = int(st.session_state.settings.get("search_start_hour", DEFAULT_SEARCH_START_HOUR))
+                search_end_hour = int(st.session_state.settings.get("search_end_hour", DEFAULT_SEARCH_END_HOUR))
+                st.warning(f"現在時間外です。検索は {search_start_hour}:00～{search_end_hour}:00 の間に行われます。")
 
             # 実行判定 (初回 または 指定時間が経過)
             should_run = False
