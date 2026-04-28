@@ -115,20 +115,28 @@ def get_random_headers() -> dict:
         "Sec-Fetch-User": "?1"
     }
 
-def fetch_with_retry(url: str, headers: dict, retries: int = 3, backoff_factor: float = 1.0):
-    """BOOKOFFリクエスト: エラー(429/5xx/接続拒否など)時のみリトライ"""
+def fetch_with_retry(url: str, headers: dict, retries: int = 5, backoff_factor: float = 2.0):
+    """BOOKOFFリクエスト: エラー(429/5xx/接続拒否など)時のみリトライ。requests.Sessionを使用し、よりブラウザに近い挙動を模倣。"""
     status_forcelist = {429, 500, 502, 503, 504}
+
+    # requests.Session を使用して、クッキーと接続プールを管理し、よりブラウザに近い挙動を模倣
+    session = requests.Session()
+    session.headers.update(headers) # 初期ヘッダーをセッションに適用
+    session.headers['Accept-Encoding'] = 'gzip, deflate, br' # Accept-Encoding を明示的に追加
+
+    # 初回アクセス前にわずかなランダム待機（ボット検知回避と自然なアクセス間隔）
+    time.sleep(random.uniform(0.5, 2.0))
 
     for attempt in range(1, retries + 1):
         try:
-            response = requests.get(url, headers=headers, timeout=10)
+            response = session.get(url, timeout=15) # タイムアウトを15秒に延長
             logger.info(f"fetch_with_retry: attempt={attempt}, status={response.status_code}, url={url}")
 
             if response.status_code in status_forcelist:
                 if attempt == retries:
-                    response.raise_for_status()
-                sleep_seconds = backoff_factor * attempt
-                logger.warning(f"リトライ対象エラー: status={response.status_code}。{sleep_seconds}s後に再試行します ({attempt}/{retries})")
+                    response.raise_for_status() # 最終試行でエラーの場合も例外を発生させる
+                sleep_seconds = backoff_factor * attempt + random.uniform(0, 1) # ランダムなジッターを追加
+                logger.warning(f"リトライ対象エラー: status={response.status_code}。{sleep_seconds:.2f}s後に再試行します ({attempt}/{retries})")
                 time.sleep(sleep_seconds)
                 continue
 
@@ -140,8 +148,8 @@ def fetch_with_retry(url: str, headers: dict, retries: int = 3, backoff_factor: 
             if attempt == retries:
                 logger.error(f"fetch_with_retry: 最終試行失敗: {e}")
                 raise
-            sleep_seconds = backoff_factor * attempt
-            logger.warning(f"リクエストエラー: {e}。{sleep_seconds}s後に再試行します ({attempt}/{retries})")
+            sleep_seconds = backoff_factor * attempt + random.uniform(0, 1) # ランダムなジッターを追加
+            logger.warning(f"リクエストエラー: {e}。{sleep_seconds:.2f}s後に再試行します ({attempt}/{retries})")
             time.sleep(sleep_seconds)
 
     raise RuntimeError("fetch_with_retry: リトライ上限に到達しました")
@@ -218,8 +226,8 @@ async def search_bookoff(request: SearchRequest):
         # BOOKOFF検索URL
         # 検索精度向上のため、括弧をスペースに置き換えて検索（Bookoffの検索エンジン仕様への対応）
         # 末尾にスペースを追加することで検索ヒット率を向上させる
-        search_query = re.sub(r'\s+', ' ', query.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')).strip() + " "
-        encoded_query = urllib.parse.quote(search_query).replace('%20', '+')
+        search_query = re.sub(r'\s+', ' ', query.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')).strip()
+        encoded_query = urllib.parse.quote(search_query)
         search_url = f"https://shopping.bookoff.co.jp/search/keyword/{encoded_query}"
         
         # ヘッダー設定（ランダムなUser-Agentを使用してブロック回避）
@@ -333,8 +341,8 @@ async def check_stock(request: SearchRequest):
         
         # BOOKOFF検索URL
         # 検索精度向上のため、括弧をスペースに置き換えて検索
-        search_query = re.sub(r'\s+', ' ', keyword.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')).strip() + " "
-        encoded_keyword = urllib.parse.quote(search_query).replace('%20', '+')
+        search_query = re.sub(r'\s+', ' ', keyword.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')).strip()
+        encoded_keyword = urllib.parse.quote(search_query)
         search_url = f"https://shopping.bookoff.co.jp/search/keyword/{encoded_keyword}"
         
         # ヘッダー設定（ランダムなUser-Agentを使用）
