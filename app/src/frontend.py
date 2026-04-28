@@ -195,14 +195,11 @@ def clear_match_history():
         return False, f"削除中にエラーが発生しました: {e}"
 
 
-def export_db_to_csv(db_path: str, table_name: str, output_path: str):
-    """DBの内容をBOM付きUTF-8のCSVで出力"""
+def get_db_csv_data(db_path: str, table_name: str) -> bytes:
+    """DBの内容をBOM付きUTF-8のCSVデータ（バイト列）として取得"""
     try:
         if not os.path.exists(db_path):
-            return False, f"データベースファイルが見つかりません: {db_path}"
-        
-        # 出力先のディレクトリ作成
-        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            return None
 
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -210,38 +207,19 @@ def export_db_to_csv(db_path: str, table_name: str, output_path: str):
             rows = cursor.fetchall()
             
             if not rows:
-                return False, "データがありません。"
+                return None
 
-            with open(output_path, 'w', encoding='utf-8-sig', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-                writer.writeheader()
-                writer.writerows([dict(row) for row in rows])
-        
-        return True, f"成功: {output_path} に保存しました"
+            import io
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows([dict(row) for row in rows])
+            
+            # Excel対応のためBOM付きUTF-8のバイト列に変換
+            return output.getvalue().encode('utf-8-sig')
     except Exception as e:
-        return False, f"エラー: {str(e)}"
-
-
-def handle_export_api_logs(export_dir: str):
-    """API状況ログ(DB1)をCSVに出力するコールバック"""
-    filename = f"api_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    path = os.path.join(export_dir, filename)
-    success, msg = export_db_to_csv(DB1_PATH, "api_logs", path)
-    if success:
-        st.toast(msg)
-    else:
-        st.error(msg)
-
-
-def handle_export_match_logs(export_dir: str):
-    """発見記録ログ(DB2)をCSVに出力するコールバック"""
-    filename = f"match_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    path = os.path.join(export_dir, filename)
-    success, msg = export_db_to_csv(DB2_PATH, "match_logs", path)
-    if success:
-        st.toast(msg)
-    else:
-        st.error(msg)
+        logger.error(f"Error generating CSV: {e}")
+        return None
 
 def handle_clear_match_logs():
     """発見記録ログ(DB2)をクリアするコールバック"""
@@ -646,15 +624,32 @@ def main():
 
         st.markdown("---")
         st.header("💾 ログ出力 (CSV)")
-        
-        # key を指定することで値の変更を確実に検知し、callbackに渡せるようにします
-        export_dir = st.text_input("ログ保存フォルダパス", value="/app/logs", key="export_path_input")
-        
-        st.button("API状況ログ出力 (DB1)", use_container_width=True, 
-                  on_click=handle_export_api_logs, args=(export_dir,))
+
+        # API状況ログ (DB1) のダウンロード
+        api_csv = get_db_csv_data(DB1_PATH, "api_logs")
+        if api_csv:
+            st.download_button(
+                label="API状況ログを保存 (DB1)",
+                data=api_csv,
+                file_name=f"api_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        else:
+            st.button("API状況ログなし (DB1)", use_container_width=True, disabled=True)
             
-        st.button("発見記録ログ出力 (DB2)", use_container_width=True, 
-                  on_click=handle_export_match_logs, args=(export_dir,))
+        # 発見記録ログ (DB2) のダウンロード
+        match_csv = get_db_csv_data(DB2_PATH, "match_logs")
+        if match_csv:
+            st.download_button(
+                label="発見記録ログを保存 (DB2)",
+                data=match_csv,
+                file_name=f"match_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        else:
+            st.button("発見記録ログなし (DB2)", use_container_width=True, disabled=True)
 
         st.markdown("---")
         # API状況表示 (DB1)
