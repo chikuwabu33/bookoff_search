@@ -11,6 +11,7 @@ services:
     environment:
       - DATA_DIR=/app/data
       - TZ=Asia/Tokyo
+      - BACKEND_URL=http://bookoff_search_backend:8000
     ports:
       - "8000:8000"
 
