@@ -68,7 +68,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # バックエンド API URL
-BACKEND_URL = "http://bookoff_search_backend:8000"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://bookoff_search_backend:8000")
 WEBHOOK_URL = "https://trigger.macrodroid.com/44e2df0f-7ca1-48e3-9d14-74434fa947e8/BOOKOFF"
 
 # キーワード保存用ファイル
