@@ -190,6 +190,11 @@ def health_check():
     """ヘルスチェックエンドポイント"""
     return {"status": "healthy"}
 
+@app.get("/")
+def read_root():
+    """ルートパスへのアクセスに対する応答（ヘルスチェック用）"""
+    return {"message": "BOOKOFF Search API is running"}
+
 
 @app.post("/api/search", response_model=SearchResponse)
 async def search_bookoff(request: SearchRequest):
