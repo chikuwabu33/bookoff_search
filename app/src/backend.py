@@ -193,12 +193,12 @@ class StockCheckResponse(BaseModel):
     products: list[SearchResult] = []
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health_check():
     """ヘルスチェックエンドポイント"""
     return {"status": "healthy"}
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def read_root():
     """ルートパスへのアクセスに対する応答（ヘルスチェック用）"""
     return {"message": "BOOKOFF Search API is running"}
