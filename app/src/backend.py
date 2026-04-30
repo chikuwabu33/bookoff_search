@@ -6,18 +6,22 @@ BOOKOFF検索機能をサポート
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from fastapi import Depends
 import requests
 from bs4 import BeautifulSoup
 import logging
 import time
 import random
-import urllib.parse
+import urllib.parse # Keep this for search query encoding
 import unicodedata
 import re
-import sqlite3
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
+from database import get_db, init_db_tables
+from models import ApiLog, MatchLog
 
+from typing import List, Optional # Add these imports
 # ロギング設定
 logging.basicConfig(
     level=logging.INFO,
@@ -27,55 +31,68 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # データベース設定
-DATA_DIR = os.getenv("DATA_DIR", "data")
-ABS_DATA_DIR = os.path.abspath(DATA_DIR)
-DB1_PATH = os.path.join(DATA_DIR, "api_logs.db")
-DB2_PATH = os.path.join(DATA_DIR, "match_logs.db")
-
-def init_dbs():
-    """データベースとテーブルの初期化"""
+# DATA_DIRはSQLiteを使用する場合に必要。Supabaseの場合は不要。
+if "sqlite" in os.getenv("DATABASE_URL", "sqlite:///./data/bookoff_search.db"):
+    # Streamlit frontend still needs DATA_DIR for keywords.json and settings.json
+    # But for backend, if using SQLite, it needs to create 'data' directory.
+    # This check ensures 'data' is created only if SQLite is used.
+    DATA_DIR = os.getenv("DATA_DIR", "data")
     os.makedirs(DATA_DIR, exist_ok=True)
-    # DB1: API実行状況 (3日間保持)
-    with sqlite3.connect(DB1_PATH) as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS api_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT (DATETIME('now', 'localtime')), endpoint TEXT, status INTEGER)")
-    # DB2: 在庫発見記録 (永続保持)
-    with sqlite3.connect(DB2_PATH) as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS match_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT (DATETIME('now', 'localtime')), keyword TEXT, title TEXT)")
-    logger.info(f"Databases initialized at: {os.path.abspath(DATA_DIR)}")
 
-def log_api_call(endpoint: str, status: int):
+# Pydantic models for log responses (for API endpoints)
+class ApiLogResponse(BaseModel):
+    id: int
+    timestamp: datetime
+    endpoint: str
+    status: int
+
+class MatchLogResponse(BaseModel):
+    id: int
+    timestamp: datetime
+    keyword: str
+    title: str
+
+def log_api_call(db: Session, endpoint: str, status: int):
     """API実行状況をDB1に記録し、3日以上前のログを削除"""
     try:
-        with sqlite3.connect(DB1_PATH) as conn:
-            conn.execute("INSERT INTO api_logs (endpoint, status) VALUES (?, ?)", (endpoint, status))
-            # 3日分を過ぎたレコードを削除
-            conn.execute("DELETE FROM api_logs WHERE timestamp < datetime('now', 'localtime', '-3 days')")
+        # 新しいログを記録
+        api_log = ApiLog(endpoint=endpoint, status=status)
+        db.add(api_log)
+        
+        # 3日分を過ぎたレコードを削除
+        three_days_ago = datetime.now() - timedelta(days=3)
+        db.query(ApiLog).filter(ApiLog.timestamp < three_days_ago).delete()
+        
+        db.commit()
     except Exception as e:
+        db.rollback()
         logger.error(f"DB1 Logging Error: {e}")
 
-def log_match_found(keyword: str, title: str):
+def log_match_found(db: Session, keyword: str, title: str):
     """
     発見した書籍をDB2に記録
     同じタイトルのものは1時間に1回のみ記録する
     """
     try:
-        with sqlite3.connect(DB2_PATH) as conn:
-            # 1時間以内に同じタイトルが記録されているかチェック
-            cursor = conn.execute(
-                "SELECT 1 FROM match_logs WHERE title = ? AND timestamp > datetime('now', 'localtime', '-1 hour') LIMIT 1",
-                (title,)
-            )
-            if cursor.fetchone():
-                logger.info(f"DB記録スキップ (1時間以内の重複): {title}")
-                return
-            
-            conn.execute("INSERT INTO match_logs (keyword, title) VALUES (?, ?)", (keyword, title))
+        # 1時間以内に同じタイトルが記録されているかチェック
+        one_hour_ago = datetime.now() - timedelta(hours=1)
+        existing_log = db.query(MatchLog).filter(
+            MatchLog.title == title,
+            MatchLog.timestamp > one_hour_ago
+        ).first()
+
+        if existing_log:
+            logger.info(f"DB記録スキップ (1時間以内の重複): {title}")
+            return
+        
+        # 新しいログを記録
+        match_log = MatchLog(keyword=keyword, title=title)
+        db.add(match_log)
+        db.commit()
     except Exception as e:
         logger.error(f"DB2 Logging Error: {e}")
 
 app = FastAPI(title="BOOKOFF Search API", version="1.0.0")
-
-init_dbs()
 
 def normalize_text(text: str) -> str:
     """比較のためにテキストを正規化（全角半角統一、記号・空白削除、小文字化）"""
@@ -204,8 +221,52 @@ def read_root():
     return {"message": "BOOKOFF Search API is running"}
 
 
+# --- ログ取得・削除用APIエンドポイント ---
+@app.get("/api/logs/api_calls", response_model=List[ApiLogResponse])
+async def get_api_logs_backend(db: Session = Depends(get_db), limit: int = 50):
+    """API実行ログを取得"""
+    # timestampはDBに保存されたUTC時刻なので、そのまま返す
+    logs = db.query(ApiLog).order_by(ApiLog.timestamp.desc()).limit(limit).all()
+    return logs
+
+@app.get("/api/logs/match_history", response_model=List[MatchLogResponse])
+async def get_match_history_backend(db: Session = Depends(get_db), limit: int = 50):
+    """発見履歴ログを取得"""
+    # timestampはDBに保存されたUTC時刻なので、そのまま返す
+    logs = db.query(MatchLog).order_by(MatchLog.timestamp.desc()).limit(limit).all()
+    return logs
+
+@app.delete("/api/logs/api_calls/clear")
+async def clear_api_logs_backend(db: Session = Depends(get_db)):
+    """API実行ログをすべて削除"""
+    try:
+        db.query(ApiLog).delete()
+        db.commit()
+        logger.info("API logs cleared successfully.")
+        return {"message": "API logs cleared successfully"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to clear API logs: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear API logs: {e}")
+
+@app.delete("/api/logs/match_history/clear")
+async def clear_match_history_backend(db: Session = Depends(get_db)):
+    """発見履歴ログをすべて削除"""
+    try:
+        db.query(MatchLog).delete()
+        db.commit()
+        logger.info("Match history cleared successfully.")
+        return {"message": "Match history cleared successfully"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to clear match history: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear match history: {e}")
+
+# --- ログ取得・削除用APIエンドポイントここまで ---
+
+
 @app.post("/api/search", response_model=SearchResponse)
-async def search_bookoff(request: SearchRequest):
+async def search_bookoff(request: SearchRequest, db: Session = Depends(get_db)):
     """
     BOOKOFF で検索を実行
     
@@ -298,13 +359,13 @@ async def search_bookoff(request: SearchRequest):
         
         logger.info(f"検索完了: {len(results)} 件の結果を取得")
         
-        log_api_call("/api/search", 200)
+        log_api_call(db, "/api/search", 200)
         return SearchResponse(
             query=query,
             count=len(results),
             results=results
         )
-        
+
     except requests.exceptions.RequestException as e:
         logger.error(f"リクエストエラー: {e}")
         raise HTTPException(
@@ -313,13 +374,13 @@ async def search_bookoff(request: SearchRequest):
         )
     except Exception as e:
         logger.error(f"エラー: {e}")
-        if hasattr(e, 'status_code'):
-            log_api_call("/api/search", e.status_code)
+        # HTTPExceptionの場合、status_codeはe.status_codeで取得できる
+        log_api_call(db, "/api/search", getattr(e, 'status_code', 500))
         raise HTTPException(status_code=500, detail=f"検索処理でエラーが発生しました: {str(e)}")
 
 
 @app.post("/api/stock", response_model=StockCheckResponse)
-async def check_stock(request: SearchRequest):
+async def check_stock(request: SearchRequest, db: Session = Depends(get_db)):
     """
     BOOKOFF で商品の在庫を確認
     
@@ -424,8 +485,8 @@ async def check_stock(request: SearchRequest):
         if fully_matching:
             logger.info(f"在庫確認完了: {keyword} - 完全一致 {len(fully_matching)} 件")
             for r in fully_matching:
-                log_match_found(keyword, r.title)
-            log_api_call("/api/stock", 200)
+                log_match_found(db, keyword, r.title)
+            log_api_call(db, "/api/stock", 200)
             return StockCheckResponse(
                 keyword=keyword,
                 in_stock=True,
@@ -436,8 +497,8 @@ async def check_stock(request: SearchRequest):
         elif partial_matching:
             logger.info(f"在庫確認完了: {keyword} - 部分一致 {len(partial_matching)} 件")
             for r in partial_matching:
-                log_match_found(keyword, r.title)
-            log_api_call("/api/stock", 200)
+                log_match_found(db, keyword, r.title)
+            log_api_call(db, "/api/stock", 200)
             return StockCheckResponse(
                 keyword=keyword,
                 in_stock=True,
@@ -447,7 +508,7 @@ async def check_stock(request: SearchRequest):
             )
         else:
             logger.info(f"在庫確認完了: {keyword} - 在庫なし")
-            log_api_call("/api/stock", 200)
+            log_api_call(db, "/api/stock", 200)
             return StockCheckResponse(
                 keyword=keyword,
                 in_stock=False,
@@ -462,14 +523,15 @@ async def check_stock(request: SearchRequest):
             status_code=503,
             detail=f"BOOKOFFサイトにアクセスできません: {str(e)}"
         )
+    # FastAPIのHTTPExceptionはstatus_code属性を持つ
     except Exception as e:
         logger.error(f"エラー: {e}")
-        if hasattr(e, 'status_code'):
-            log_api_call("/api/stock", e.status_code)
+        log_api_call(db, "/api/stock", getattr(e, 'status_code', 500))
         raise HTTPException(status_code=500, detail=f"在庫確認処理でエラーが発生しました: {str(e)}")
 
 
 if __name__ == "__main__":
+    init_db_tables() # アプリケーション起動時にテーブルを初期化
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
