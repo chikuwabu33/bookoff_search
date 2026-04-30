@@ -11,6 +11,7 @@ import datetime
 import os
 import logging
 import csv
+import urllib.parse
 from typing import List, Dict
 
 # ロギング設定
@@ -760,7 +761,7 @@ def main():
             st.dataframe(
                 st.session_state.show_api_logs,
                 use_container_width=True,
-                height=1085 if len(st.session_state.show_api_logs) > 30 else None,
+                height=500 if len(st.session_state.show_api_logs) > 30 else None,
                 hide_index=True
             )
         else:
@@ -778,7 +779,7 @@ def main():
             st.dataframe(
                 st.session_state.show_history,
                 use_container_width=True,
-                height=1085 if len(st.session_state.show_history) > 30 else None,
+                height=500 if len(st.session_state.show_history) > 30 else None,
                 hide_index=True
             )
         else:
