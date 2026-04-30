@@ -132,7 +132,7 @@ def get_random_headers() -> dict:
         "Sec-Fetch-User": "?1"
     }
 
-def fetch_with_retry(url: str, headers: dict, retries: int = 5, backoff_factor: float = 2.0):
+def fetch_with_retry(url: str, headers: dict, retries: int = 5, backoff_factor: float = 3.0):
     """BOOKOFFリクエスト: エラー(429/5xx/接続拒否など)時のみリトライ。requests.Sessionを使用し、よりブラウザに近い挙動を模倣。"""
     status_forcelist = {429, 500, 502, 503, 504}
 
@@ -142,11 +142,11 @@ def fetch_with_retry(url: str, headers: dict, retries: int = 5, backoff_factor: 
     session.headers['Accept-Encoding'] = 'gzip, deflate, br' # Accept-Encoding を明示的に追加
 
     # 初回アクセス前にわずかなランダム待機（ボット検知回避と自然なアクセス間隔）
-    time.sleep(random.uniform(0.5, 2.0))
+    time.sleep(random.uniform(1.0, 3.0))
 
     for attempt in range(1, retries + 1):
         try:
-            response = session.get(url, timeout=15) # タイムアウトを15秒に延長
+            response = session.get(url, timeout=20) # タイムアウトを20秒に延長
             logger.info(f"fetch_with_retry: attempt={attempt}, status={response.status_code}, url={url}")
 
             if response.status_code in status_forcelist:
@@ -287,15 +287,15 @@ async def search_bookoff(request: SearchRequest, db: Session = Depends(get_db)):
         # BOOKOFF検索URL
         # 検索精度向上のため、括弧をスペースに置き換えて検索（Bookoffの検索エンジン仕様への対応）
         # 末尾にスペースを追加することで検索ヒット率を向上させる
-        search_query = re.sub(r'\s+', ' ', query.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')).strip()
+        search_query = re.sub(r'\s+', ' ', query.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')).strip() + " "
         encoded_query = urllib.parse.quote(search_query)
         search_url = f"https://shopping.bookoff.co.jp/search/keyword/{encoded_query}"
         
         # ヘッダー設定（ランダムなUser-Agentを使用してブロック回避）
         headers = get_random_headers()
 
-        # BOOKOFFアクセス（エラー状態時のみ3回リトライ）
-        response = fetch_with_retry(search_url, headers=headers, retries=3, backoff_factor=1.0)
+        # BOOKOFFアクセス（エラー状態時のみ5回リトライ）
+        response = fetch_with_retry(search_url, headers=headers, retries=5, backoff_factor=2.0)
 
         # HTMLをパース
         soup = BeautifulSoup(response.content, "html.parser")
@@ -402,15 +402,15 @@ async def check_stock(request: SearchRequest, db: Session = Depends(get_db)):
         
         # BOOKOFF検索URL
         # 検索精度向上のため、括弧をスペースに置き換えて検索
-        search_query = re.sub(r'\s+', ' ', keyword.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')).strip()
+        search_query = re.sub(r'\s+', ' ', keyword.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')).strip() + " "
         encoded_keyword = urllib.parse.quote(search_query)
         search_url = f"https://shopping.bookoff.co.jp/search/keyword/{encoded_keyword}"
         
         # ヘッダー設定（ランダムなUser-Agentを使用）
         headers = get_random_headers()
         
-        # BOOKOFFアクセス（エラー状態時のみ3回リトライ）
-        response = fetch_with_retry(search_url, headers=headers, retries=3, backoff_factor=1.0)
+        # BOOKOFFアクセス（エラー状態時のみ5回リトライ）
+        response = fetch_with_retry(search_url, headers=headers, retries=5, backoff_factor=2.0)
 
         # HTMLをパース
         soup = BeautifulSoup(response.content, "html.parser")
