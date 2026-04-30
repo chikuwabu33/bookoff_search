@@ -123,7 +123,11 @@ def get_random_headers() -> dict:
         "User-Agent": random.choice(USER_AGENTS),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-        "Referer": "https://shopping.bookoff.co.jp/",
+        "Referer": random.choice([
+            "https://shopping.bookoff.co.jp/",
+            "https://www.google.com/",
+            "https://search.yahoo.co.jp/"
+        ]),
         "Connection": "keep-alive",
         "Upgrade-Insecure-Requests": "1",
         "Sec-Fetch-Dest": "document",
@@ -142,7 +146,7 @@ def fetch_with_retry(url: str, headers: dict, retries: int = 5, backoff_factor: 
     session.headers['Accept-Encoding'] = 'gzip, deflate, br' # Accept-Encoding を明示的に追加
 
     # 初回アクセス前にわずかなランダム待機（ボット検知回避と自然なアクセス間隔）
-    time.sleep(random.uniform(2.0, 4.0))
+    time.sleep(random.uniform(4.0, 8.0))
 
     for attempt in range(1, retries + 1):
         try:

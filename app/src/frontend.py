@@ -379,7 +379,7 @@ def check_all_keywords():
     for i, keyword in enumerate(st.session_state.keywords):
         # 2つ目以降のキーワード検索の前にランダムな待機時間を設けて503エラーを回避
         if i > 0:
-            time.sleep(random.uniform(3.0, 6.0))
+            time.sleep(random.uniform(8.0, 15.0))
             
         results[keyword] = check_stock(keyword)
     
