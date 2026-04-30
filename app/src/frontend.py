@@ -757,11 +757,9 @@ def main():
         st.markdown("---")
         st.subheader("📊 API状況ログ (DB1)")
         if st.session_state.show_api_logs:
-            # 30行を超えたらスクロールを表示 (1行約35pxとして計算)
             st.dataframe(
                 st.session_state.show_api_logs,
                 use_container_width=True,
-                height=500 if len(st.session_state.show_api_logs) > 30 else None,
                 hide_index=True
             )
         else:
@@ -775,11 +773,9 @@ def main():
         st.markdown("---")
         st.subheader("📜 最近の発見履歴 (DB2)")
         if st.session_state.show_history:
-            # 30行を超えたらスクロールを表示 (1行約35pxとして計算)
             st.dataframe(
                 st.session_state.show_history,
                 use_container_width=True,
-                height=500 if len(st.session_state.show_history) > 30 else None,
                 hide_index=True
             )
         else:
