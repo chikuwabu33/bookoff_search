@@ -344,7 +344,7 @@ def check_stock(keyword: str) -> Dict:
         response = requests.post(
             f"{BACKEND_URL}/api/stock",
             json={"query": keyword},
-            timeout=30
+            timeout=120
         )
         
         if response.status_code == 200:
