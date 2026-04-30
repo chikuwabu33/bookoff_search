@@ -142,7 +142,7 @@ def fetch_with_retry(url: str, headers: dict, retries: int = 5, backoff_factor: 
     session.headers['Accept-Encoding'] = 'gzip, deflate, br' # Accept-Encoding を明示的に追加
 
     # 初回アクセス前にわずかなランダム待機（ボット検知回避と自然なアクセス間隔）
-    time.sleep(random.uniform(1.0, 3.0))
+    time.sleep(random.uniform(2.0, 4.0))
 
     for attempt in range(1, retries + 1):
         try:
@@ -295,7 +295,7 @@ async def search_bookoff(request: SearchRequest, db: Session = Depends(get_db)):
         headers = get_random_headers()
 
         # BOOKOFFアクセス（エラー状態時のみ5回リトライ）
-        response = fetch_with_retry(search_url, headers=headers, retries=5, backoff_factor=2.0)
+        response = fetch_with_retry(search_url, headers=headers, retries=5, backoff_factor=3.0)
 
         # HTMLをパース
         soup = BeautifulSoup(response.content, "html.parser")
@@ -410,7 +410,7 @@ async def check_stock(request: SearchRequest, db: Session = Depends(get_db)):
         headers = get_random_headers()
         
         # BOOKOFFアクセス（エラー状態時のみ5回リトライ）
-        response = fetch_with_retry(search_url, headers=headers, retries=5, backoff_factor=2.0)
+        response = fetch_with_retry(search_url, headers=headers, retries=5, backoff_factor=3.0)
 
         # HTMLをパース
         soup = BeautifulSoup(response.content, "html.parser")

@@ -7,6 +7,7 @@ import streamlit as st
 import requests
 import json
 import time
+import random
 import datetime
 import os
 import logging
@@ -82,7 +83,8 @@ def load_settings() -> Dict:
         "interval_minutes": 60, # デフォルト60分
         "last_notification_sent_date": "",
         "search_start_hour": DEFAULT_SEARCH_START_HOUR,
-        "search_end_hour": DEFAULT_SEARCH_END_HOUR
+        "search_end_hour": DEFAULT_SEARCH_END_HOUR,
+        "auto_loop": False # 自動検索のON/OFF状態も保存対象に追加
     }
     abs_path = os.path.abspath(SETTINGS_FILE)
     logger.info(f"Attempting to load settings from: {abs_path}")
@@ -279,7 +281,7 @@ def initialize_session_state():
     if "error_message" not in st.session_state:
         st.session_state.error_message = None
     if "auto_loop" not in st.session_state:
-        st.session_state.auto_loop = False
+        st.session_state.auto_loop = st.session_state.settings.get("auto_loop", False)
     if "show_api_logs" not in st.session_state:
         st.session_state.show_api_logs = None
     if "confirm_delete_db1" not in st.session_state:
@@ -374,7 +376,11 @@ def check_all_keywords():
         return
     
     results = {}
-    for keyword in st.session_state.keywords:
+    for i, keyword in enumerate(st.session_state.keywords):
+        # 2つ目以降のキーワード検索の前にランダムな待機時間を設けて503エラーを回避
+        if i > 0:
+            time.sleep(random.uniform(3.0, 6.0))
+            
         results[keyword] = check_stock(keyword)
     
     st.session_state.stock_results = results
@@ -716,12 +722,16 @@ def main():
         with col_act2:
             if st.session_state.auto_loop:
                 if st.button("⏹️ 自動検索を停止", use_container_width=True, type="secondary"):
+                    st.session_state.settings["auto_loop"] = False
                     st.session_state.auto_loop = False
+                    save_settings(st.session_state.settings)
                     st.rerun()
             else:
                 def start_auto_loop():
+                    st.session_state.settings["auto_loop"] = True
                     st.session_state.auto_loop = True
                     st.session_state.last_run_time = None
+                    save_settings(st.session_state.settings)
                 
                 st.button("🔄 自動検索を開始", use_container_width=True, on_click=start_auto_loop)
 
@@ -873,6 +883,11 @@ def main():
                 # UI更新エラーなどは無視するが、制御フローは止めない
                 break
 
+        st.rerun()
+
+
+if __name__ == "__main__":
+    main()
         st.rerun()
 
 
