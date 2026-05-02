@@ -7,13 +7,12 @@ import streamlit as st
 import requests
 import json
 import time
+import random
 import datetime
 import os
 import logging
-import urllib.parse
-import re
-import sqlite3
 import csv
+import urllib.parse
 from typing import List, Dict
 
 # ロギング設定
@@ -68,56 +67,56 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # バックエンド API URL
-BACKEND_URL = "http://bookoff_search_backend:8000"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://bookoff_search_backend:8000")
 WEBHOOK_URL = "https://trigger.macrodroid.com/44e2df0f-7ca1-48e3-9d14-74434fa947e8/BOOKOFF"
 
 # キーワード保存用ファイル
 DATA_DIR = os.getenv("DATA_DIR", "data")
 KEYWORDS_FILE = os.path.join(DATA_DIR, "keywords.json")
-SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
-DB1_PATH = os.path.join(DATA_DIR, "api_logs.db")
-DB2_PATH = os.path.join(DATA_DIR, "match_logs.db")
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json") # 設定ファイルはローカルに保持
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
 def load_settings() -> Dict:
     """設定を読み込む"""
     default_settings = {
-        "interval_minutes": 60,
+        "interval_minutes": 60, # デフォルト60分
         "last_notification_sent_date": "",
         "search_start_hour": DEFAULT_SEARCH_START_HOUR,
-        "search_end_hour": DEFAULT_SEARCH_END_HOUR
+        "search_end_hour": DEFAULT_SEARCH_END_HOUR,
+        "auto_loop": False # 自動検索のON/OFF状態も保存対象に追加
     }
     abs_path = os.path.abspath(SETTINGS_FILE)
     logger.info(f"Attempting to load settings from: {abs_path}")
-    if os.path.exists(SETTINGS_FILE):
+    if os.path.exists(abs_path):
         try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            with open(abs_path, "r", encoding="utf-8") as f:
                 saved = json.load(f)
                 default_settings.update(saved)
                 logger.info(f"Settings successfully loaded from {abs_path}")
                 return default_settings
         except Exception as e:
-            logger.error(f"Error loading settings: {e}")
+            logger.error(f"Error loading settings from {abs_path}: {e}")
     return default_settings
 
 
 def save_settings(settings: Dict):
     """設定を保存"""
-    if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR)
+    abs_path = os.path.abspath(SETTINGS_FILE)
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
     try:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        with open(abs_path, "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
+            logger.info(f"Settings successfully saved to {abs_path}")
     except Exception as e:
-        logger.error(f"Error saving settings: {e}")
+        logger.error(f"Error saving settings to {abs_path}: {e}")
 
 
 def is_within_search_window() -> bool:
     """現在の時刻が検索実行時間帯内か判定する"""
     # JST (UTC+9) タイムゾーンを指定して現在時刻を取得
     jst = datetime.timezone(datetime.timedelta(hours=9))
-    now_hour = datetime.datetime.now(jst).hour
+    now_hour = datetime.datetime.now(jst).hour # JSTの現在時刻
     # 設定値から開始・終了時刻を取得
     search_start_hour = int(st.session_state.settings.get("search_start_hour", DEFAULT_SEARCH_START_HOUR))
     search_end_hour = int(st.session_state.settings.get("search_end_hour", DEFAULT_SEARCH_END_HOUR))
@@ -125,123 +124,83 @@ def is_within_search_window() -> bool:
     return search_start_hour <= now_hour < search_end_hour
 
 def get_effective_interval_seconds() -> int:
-    """現在の時刻に基づいた実行間隔（秒）を返す"""
+    """現在の時刻に基づいた実行間隔（秒）を返す。11時から12時の間は15秒間隔。"""
     # JST (UTC+9) タイムゾーンを指定して現在時刻を取得
     jst = datetime.timezone(datetime.timedelta(hours=9))
-    now_hour = datetime.datetime.now(jst).hour
+    now_hour = datetime.datetime.now(jst).hour # JSTの現在時刻
     # 11:00から12:00の間は15秒間隔
     if 11 <= now_hour < 12:
         return 15
     # それ以外は設定値（分）を秒に変換して返す
     return int(st.session_state.settings.get("interval_minutes", 60) * 60)
 
-
 def get_match_history(limit: int = 50) -> List[Dict]:
-    """DB2から最近の発見履歴を取得"""
-    if not os.path.exists(DB2_PATH):
-        return []
+    """バックエンドAPIから最近の発見履歴を取得"""
     try:
-        with sqlite3.connect(DB2_PATH) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                "SELECT timestamp, keyword, title FROM match_logs ORDER BY timestamp DESC LIMIT ?", 
-                (limit,)
-            )
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
-    except Exception as e:
-        logger.error(f"Error reading history: {e}")
+        response = requests.get(f"{BACKEND_URL}/api/logs/match_history", params={"limit": limit}, timeout=10)
+        response.raise_for_status() # HTTPエラーが発生した場合に例外を発生させる
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching match history from backend: {e}")
         return []
 
 def get_api_logs(limit: int = 50) -> List[Dict]:
-    """DB1から最近のAPI実行ログを取得"""
-    if not os.path.exists(DB1_PATH):
-        return []
+    """バックエンドAPIから最近のAPI実行ログを取得"""
     try:
-        with sqlite3.connect(DB1_PATH) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                "SELECT timestamp, endpoint, status FROM api_logs ORDER BY timestamp DESC LIMIT ?", 
-                (limit,)
-            )
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
-    except Exception as e:
-        logger.error(f"Error reading api logs: {e}")
+        response = requests.get(f"{BACKEND_URL}/api/logs/api_calls", params={"limit": limit}, timeout=10)
+        response.raise_for_status() # HTTPエラーが発生した場合に例外を発生させる
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching API logs from backend: {e}")
         return []
 
 def clear_api_logs():
-    """DB1 (API状況ログ) をすべて削除"""
+    """バックエンドAPI経由でAPI状況ログをすべて削除"""
     try:
-        if os.path.exists(DB1_PATH):
-            with sqlite3.connect(DB1_PATH) as conn:
-                conn.execute("DELETE FROM api_logs")
-            return True, "API状況ログをすべて削除しました"
-        return False, "データベースファイルが見つかりません"
-    except Exception as e:
-        logger.error(f"Error clearing api logs: {e}")
+        response = requests.delete(f"{BACKEND_URL}/api/logs/api_calls/clear", timeout=10)
+        response.raise_for_status()
+        return True, "API状況ログをすべて削除しました"
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error clearing API logs via backend: {e}")
         return False, f"削除中にエラーが発生しました: {e}"
 
 def clear_match_history():
-    """DB2 (発見履歴) をすべて削除"""
+    """バックエンドAPI経由で発見履歴をすべて削除"""
     try:
-        if os.path.exists(DB2_PATH):
-            with sqlite3.connect(DB2_PATH) as conn:
-                conn.execute("DELETE FROM match_logs")
-            return True, "発見履歴をすべて削除しました"
-        return False, "データベースファイルが見つかりません"
-    except Exception as e:
-        logger.error(f"Error clearing history: {e}")
+        response = requests.delete(f"{BACKEND_URL}/api/logs/match_history/clear", timeout=10)
+        response.raise_for_status()
+        return True, "発見履歴をすべて削除しました"
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error clearing match history via backend: {e}")
         return False, f"削除中にエラーが発生しました: {e}"
 
 
-def export_db_to_csv(db_path: str, table_name: str, output_path: str):
-    """DBの内容をBOM付きUTF-8のCSVで出力"""
+def get_db_csv_data(endpoint_path: str, file_prefix: str) -> bytes:
+    """バックエンドAPIからログデータを取得し、BOM付きUTF-8のCSVデータ（バイト列）として返す"""
     try:
-        if not os.path.exists(db_path):
-            return False, f"データベースファイルが見つかりません: {db_path}"
-        
-        # 出力先のディレクトリ作成
-        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        response = requests.get(f"{BACKEND_URL}{endpoint_path}", timeout=10)
+        response.raise_for_status()
+        data = response.json()
 
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(f"SELECT * FROM {table_name}")
-            rows = cursor.fetchall()
-            
-            if not rows:
-                return False, "データがありません。"
+        if not data:
+            return None
 
-            with open(output_path, 'w', encoding='utf-8-sig', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-                writer.writeheader()
-                writer.writerows([dict(row) for row in rows])
+        import io
+        output = io.StringIO()
+        # ヘッダーを動的に取得
+        fieldnames = data[0].keys() if data else []
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(data)
         
-        return True, f"成功: {output_path} に保存しました"
+        # Excel対応のためBOM付きUTF-8のバイト列に変換
+        return output.getvalue().encode('utf-8-sig')
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching data for CSV from backend ({endpoint_path}): {e}")
+        return None
     except Exception as e:
-        return False, f"エラー: {str(e)}"
-
-
-def handle_export_api_logs(export_dir: str):
-    """API状況ログ(DB1)をCSVに出力するコールバック"""
-    filename = f"api_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    path = os.path.join(export_dir, filename)
-    success, msg = export_db_to_csv(DB1_PATH, "api_logs", path)
-    if success:
-        st.toast(msg)
-    else:
-        st.error(msg)
-
-
-def handle_export_match_logs(export_dir: str):
-    """発見記録ログ(DB2)をCSVに出力するコールバック"""
-    filename = f"match_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    path = os.path.join(export_dir, filename)
-    success, msg = export_db_to_csv(DB2_PATH, "match_logs", path)
-    if success:
-        st.toast(msg)
-    else:
-        st.error(msg)
+        logger.error(f"Error generating CSV from backend data ({endpoint_path}): {e}")
+        return None
 
 def handle_clear_match_logs():
     """発見記録ログ(DB2)をクリアするコールバック"""
@@ -281,15 +240,16 @@ def load_keywords() -> List[str]:
     """保存されたキーワードを読み込む"""
     abs_path = os.path.abspath(KEYWORDS_FILE)
     logger.info(f"Attempting to load keywords from: {abs_path}")
-    if os.path.exists(KEYWORDS_FILE):
+    if os.path.exists(abs_path):
         try:
-            with open(KEYWORDS_FILE, "r", encoding="utf-8") as f:
+            with open(abs_path, "r", encoding="utf-8") as f:
                 keywords = json.load(f)
                 logger.info(f"Keywords successfully loaded: {len(keywords)} items from {abs_path}")
                 return keywords
         except Exception as e:
-            logger.error(f"Error loading keywords: {e}")
+            logger.error(f"Error loading keywords from {abs_path}: {e}")
             return []
+    # ファイルが存在しない場合は空のリストを返す
     logger.warning(f"Keywords file not found at: {abs_path}")
     return []
 
@@ -297,10 +257,12 @@ def load_keywords() -> List[str]:
 def save_keywords(keywords: List[str]):
     """キーワードをファイルに保存"""
     if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR)
+        os.makedirs(DATA_DIR, exist_ok=True)
+    abs_path = os.path.abspath(KEYWORDS_FILE)
     try:
-        with open(KEYWORDS_FILE, "w", encoding="utf-8") as f:
+        with open(abs_path, "w", encoding="utf-8") as f:
             json.dump(keywords, f, ensure_ascii=False, indent=2)
+            logger.info(f"Keywords successfully saved to {abs_path}")
     except Exception as e:
         logger.error(f"Error saving keywords: {e}")
 
@@ -319,7 +281,7 @@ def initialize_session_state():
     if "error_message" not in st.session_state:
         st.session_state.error_message = None
     if "auto_loop" not in st.session_state:
-        st.session_state.auto_loop = False
+        st.session_state.auto_loop = st.session_state.settings.get("auto_loop", False)
     if "show_api_logs" not in st.session_state:
         st.session_state.show_api_logs = None
     if "confirm_delete_db1" not in st.session_state:
@@ -382,7 +344,7 @@ def check_stock(keyword: str) -> Dict:
         response = requests.post(
             f"{BACKEND_URL}/api/stock",
             json={"query": keyword},
-            timeout=30
+            timeout=120
         )
         
         if response.status_code == 200:
@@ -414,7 +376,11 @@ def check_all_keywords():
         return
     
     results = {}
-    for keyword in st.session_state.keywords:
+    for i, keyword in enumerate(st.session_state.keywords):
+        # 2つ目以降のキーワード検索の前にランダムな待機時間を設けて503エラーを回避
+        if i > 0:
+            time.sleep(random.uniform(8.0, 15.0))
+            
         results[keyword] = check_stock(keyword)
     
     st.session_state.stock_results = results
@@ -646,15 +612,32 @@ def main():
 
         st.markdown("---")
         st.header("💾 ログ出力 (CSV)")
-        
-        # key を指定することで値の変更を確実に検知し、callbackに渡せるようにします
-        export_dir = st.text_input("ログ保存フォルダパス", value="/app/logs", key="export_path_input")
-        
-        st.button("API状況ログ出力 (DB1)", use_container_width=True, 
-                  on_click=handle_export_api_logs, args=(export_dir,))
+
+        # API状況ログ (DB1) のダウンロード
+        api_csv = get_db_csv_data("/api/logs/api_calls", "api_logs")
+        if api_csv:
+            st.download_button(
+                label="API状況ログを保存 (DB1)",
+                data=api_csv,
+                file_name=f"api_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        else:
+            st.button("API状況ログなし (DB1)", use_container_width=True, disabled=True)
             
-        st.button("発見記録ログ出力 (DB2)", use_container_width=True, 
-                  on_click=handle_export_match_logs, args=(export_dir,))
+        # 発見記録ログ (DB2) のダウンロード
+        match_csv = get_db_csv_data("/api/logs/match_history", "match_logs")
+        if match_csv:
+            st.download_button(
+                label="発見記録ログを保存 (DB2)",
+                data=match_csv,
+                file_name=f"match_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        else:
+            st.button("発見記録ログなし (DB2)", use_container_width=True, disabled=True)
 
         st.markdown("---")
         # API状況表示 (DB1)
@@ -739,12 +722,16 @@ def main():
         with col_act2:
             if st.session_state.auto_loop:
                 if st.button("⏹️ 自動検索を停止", use_container_width=True, type="secondary"):
+                    st.session_state.settings["auto_loop"] = False
                     st.session_state.auto_loop = False
+                    save_settings(st.session_state.settings)
                     st.rerun()
             else:
                 def start_auto_loop():
+                    st.session_state.settings["auto_loop"] = True
                     st.session_state.auto_loop = True
                     st.session_state.last_run_time = None
+                    save_settings(st.session_state.settings)
                 
                 st.button("🔄 自動検索を開始", use_container_width=True, on_click=start_auto_loop)
 
@@ -780,11 +767,9 @@ def main():
         st.markdown("---")
         st.subheader("📊 API状況ログ (DB1)")
         if st.session_state.show_api_logs:
-            # 30行を超えたらスクロールを表示 (1行約35pxとして計算)
             st.dataframe(
                 st.session_state.show_api_logs,
                 use_container_width=True,
-                height=1085 if len(st.session_state.show_api_logs) > 30 else None,
                 hide_index=True
             )
         else:
@@ -798,11 +783,9 @@ def main():
         st.markdown("---")
         st.subheader("📜 最近の発見履歴 (DB2)")
         if st.session_state.show_history:
-            # 30行を超えたらスクロールを表示 (1行約35pxとして計算)
             st.dataframe(
                 st.session_state.show_history,
                 use_container_width=True,
-                height=1085 if len(st.session_state.show_history) > 30 else None,
                 hide_index=True
             )
         else:
