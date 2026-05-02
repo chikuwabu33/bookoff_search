@@ -16,6 +16,9 @@ connect_args = {}
 # SQLiteを使用する場合のみ、スレッド間での同一接続許可設定が必要
 if DATABASE_URL.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
+elif DATABASE_URL.startswith("postgresql"):
+    # SupabaseなどのリモートPostgres接続時にSSLを強制する
+    connect_args = {"sslmode": "require"}
 
 engine = create_engine(
     DATABASE_URL,
