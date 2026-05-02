@@ -8,11 +8,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # システムパッケージのインストールとユーザーの作成
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     build-essential \
     curl \
+    ca-certificates \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -m -U appuser
+    && groupadd -r appuser \
+    && useradd -r -g appuser -m -d /home/appuser appuser
 
 # Pythonパッケージのインストール
 COPY requirements_frontend.txt .
@@ -20,10 +23,11 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements_frontend.txt
 
 # アプリケーションコードのコピー
-COPY app/ .
+COPY --chown=appuser:appuser app/ .
 
-# 所有権の変更とユーザーの切り替え
-RUN chown -R appuser:appuser /app
+# データ保存用ディレクトリの作成と、/app全体の所有権をappuserに一括設定
+RUN mkdir -p /app/data && chown -R appuser:appuser /app
+
 USER appuser
 
 # ヘルスチェック (Streamlit専用エンドポイント)

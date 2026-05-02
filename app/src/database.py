@@ -2,6 +2,7 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy import event
 
 # 環境変数からDB接続情報を取得。デフォルトはローカルSQLite
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/bookoff_search.db")
@@ -15,12 +16,25 @@ connect_args = {}
 # SQLiteを使用する場合のみ、スレッド間での同一接続許可設定が必要
 if DATABASE_URL.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
+elif DATABASE_URL.startswith("postgresql"):
+    # SupabaseなどのリモートPostgres接続時にSSLを強制する
+    connect_args = {"sslmode": "require"}
 
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
     connect_args=connect_args
 )
+
+# SQLiteのパフォーマンスと並行性を向上させる設定
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    if DATABASE_URL.startswith("sqlite"):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 # セッション作成用のクラス
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

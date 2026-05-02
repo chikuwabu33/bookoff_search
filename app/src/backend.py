@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from fastapi import Depends
 import requests
+from contextlib import asynccontextmanager
 from bs4 import BeautifulSoup
 import logging
 import time
@@ -17,10 +18,21 @@ import urllib.parse # Keep this for search query encoding
 import unicodedata
 import re
 import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from database import get_db, init_db_tables
 from models import ApiLog, MatchLog
 
+try:
+    from playwright.async_api import async_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+
+# Playwrightが実行できない場合のフォールバック制御
+_playwright_failed = False
+
+from dotenv import load_dotenv # 追加
 from typing import List, Optional # Add these imports
 # ロギング設定
 logging.basicConfig(
@@ -30,14 +42,161 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# データベース設定
-# DATA_DIRはSQLiteを使用する場合に必要。Supabaseの場合は不要。
-if "sqlite" in os.getenv("DATABASE_URL", "sqlite:///./data/bookoff_search.db"):
-    # Streamlit frontend still needs DATA_DIR for keywords.json and settings.json
-    # But for backend, if using SQLite, it needs to create 'data' directory.
-    # This check ensures 'data' is created only if SQLite is used.
-    DATA_DIR = os.getenv("DATA_DIR", "data")
-    os.makedirs(DATA_DIR, exist_ok=True)
+# .envファイルから環境変数を読み込む
+load_dotenv() # 追加
+
+# バックエンドURL設定 (追加)
+BACKEND_URL = os.getenv("BACKEND_URL", None)
+if BACKEND_URL:
+    logger.info(f"Backend URL configured: {BACKEND_URL}")
+
+# グローバルプロキシ変数
+BOOKOFF_PROXY_URL = os.getenv("BOOKOFF_PROXY_URL", None)
+
+# グローバルセッション（複数のリクエスト間でクッキーを保持するために必要）
+_global_bookoff_session = None
+
+def get_global_bookoff_session():
+    """
+    BOOKOFFアクセス用のグローバルなセッションオブジェクトを取得します。
+    初回呼び出し時にセッションの初期化、ヘッダー設定、およびWAF回避のためのウォームアップを行います。
+
+    Returns:
+        requests.Session: 初期化済みのセッションオブジェクト
+    """
+    global _global_bookoff_session
+    if _global_bookoff_session is None:
+        _global_bookoff_session = requests.Session()
+        _global_bookoff_session.trust_env = False
+        headers = get_random_headers()
+        _global_bookoff_session.headers.update(headers)
+        _global_bookoff_session.headers['Accept-Encoding'] = 'gzip, deflate, br'
+        _global_bookoff_session.headers['Connection'] = 'keep-alive'
+        _global_bookoff_session.headers['DNT'] = '1'
+        _global_bookoff_session.headers['TE'] = 'trailers'
+
+        if BOOKOFF_PROXY_URL:
+            _global_bookoff_session.proxies = {"http": BOOKOFF_PROXY_URL, "https": BOOKOFF_PROXY_URL}
+        else:
+            _global_bookoff_session.proxies = {}
+
+        # 初回セッション化時に根ページをフェッチしてクッキーを取得、その後簡単な検索もする
+#        try:
+#            time.sleep(random.uniform(0.5, 1.5))
+#            resp_root = _global_bookoff_session.get("https://shopping.bookoff.co.jp/", timeout=20)
+#            logger.debug(f"Global Bookoff session initialized: root status={resp_root.status_code}")
+#            if resp_root.status_code == 503:
+#                logger.warning("Bookoff root returned 503 during session init; retrying with refreshed headers.")
+#                _global_bookoff_session.cookies.clear()
+#                _global_bookoff_session.headers.update(get_random_headers())
+#                time.sleep(random.uniform(1.0, 2.0))
+#                resp_root = _global_bookoff_session.get("https://shopping.bookoff.co.jp/", timeout=20)
+#                logger.debug(f"Global Bookoff session reinitialized: root status={resp_root.status_code}")
+#
+#            # WAFの検知を回避するために簡単な検索もしておく
+#            time.sleep(random.uniform(2.0, 4.0))
+#            warmup_url = "https://shopping.bookoff.co.jp/search/keyword/python%20"
+#            resp_search = _global_bookoff_session.get(
+#                warmup_url,
+#                headers={"Referer": "https://shopping.bookoff.co.jp/"},
+#                timeout=20
+#            )
+#            logger.debug(f"Global Bookoff session warmed up: search status={resp_search.status_code}")
+#            if resp_search.status_code == 503:
+#                logger.warning("Bookoff warmup search returned 503; retrying once.")
+#                time.sleep(random.uniform(2.0, 3.0))
+#                resp_search = _global_bookoff_session.get(
+#                    warmup_url,
+#                    headers={"Referer": "https://shopping.bookoff.co.jp/"},
+#                    timeout=20
+#                )
+#                logger.debug(f"Global Bookoff session warmed up after retry: search status={resp_search.status_code}")
+#        except Exception as e:
+#            logger.warning(f"Failed to initialize/warm up global Bookoff session: {e}")
+    return _global_bookoff_session
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # データベースディレクトリの作成と権限確認
+    db_url = os.getenv("DATABASE_URL", "sqlite:///./data/bookoff_search.db")
+    if "sqlite" in db_url:
+        data_dir = os.getenv("DATA_DIR", "/app/data")
+        os.makedirs(data_dir, exist_ok=True)
+        # 書き込み権限テスト
+        test_file = os.path.join(data_dir, ".write_test")
+        try:
+            with open(test_file, "w") as f:
+                f.write("test")
+            os.remove(test_file)
+        except Exception as e:
+            logger.error(f"CRITICAL: データベースディレクトリへの書き込み権限がありません: {data_dir} - {e}")
+
+    init_db_tables()
+    setup_automatic_proxy()
+    yield
+    # Clean up resources if necessary
+
+app = FastAPI(title="BOOKOFF Search API", version="1.0.0", lifespan=lifespan)
+
+def setup_automatic_proxy():
+    """
+    CyberSyndrome (https://www.cybersyndrome.net/) からプロキシリストを取得し、
+    BOOKOFFへのアクセスが可能なプロキシを自動探索してグローバル変数に設定します。
+    """
+    global BOOKOFF_PROXY_URL
+    
+    # 環境変数ですでに指定されている場合はそれを優先する（オプション）
+    if BOOKOFF_PROXY_URL:
+        logger.info(f"環境変数からプロキシを使用します: {BOOKOFF_PROXY_URL}")
+        return
+
+    logger.info("自動プロキシ探索を開始します: https://www.cybersyndrome.net/plr6.html")
+    source_url = "https://www.cybersyndrome.net/plr6.html"
+    test_target = "https://shopping.bookoff.co.jp/"
+    
+    try:
+        resp = requests.get(source_url, headers=get_random_headers(), timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.content, "html.parser")
+        
+        # プロキシ候補の抽出
+        candidates = []
+        # CyberSyndromeの構造に合わせてテーブル行を解析
+        rows = soup.find_all("tr")
+        for row in rows:
+            cols = row.find_all("td")
+            # 通常、2列目にIP:Port、3列目に匿名性ランクがある
+            if len(cols) >= 3:
+                address = cols[1].get_text(strip=True)
+                anonymity = cols[2].get_text(strip=True)
+                
+                # IP:Portの形式チェックと匿名性Dの除外
+                if ":" in address and "D" not in anonymity:
+                    candidates.append(address)
+
+        logger.info(f"{len(candidates)} 件のプロキシ候補が見つかりました。接続テストを開始します...")
+
+        for addr in candidates[:20]:  # 上位20件を試行
+            proxy_url = f"http://{addr}"
+            try:
+                # 実際にBOOKOFFにアクセスできるかテスト（タイムアウトは短めに設定）
+                test_resp = requests.Session()
+                test_resp.trust_env = False
+                test_resp.headers.update(get_random_headers())
+                test_resp.headers['Accept-Encoding'] = 'gzip, deflate, br'
+                test_resp = test_resp.get(test_target, 
+                                         proxies={"http": proxy_url, "https": proxy_url}, 
+                                         timeout=7)
+                if test_resp.status_code == 200:
+                    logger.info(f"使用可能なプロキシを発見しました: {proxy_url}")
+                    BOOKOFF_PROXY_URL = proxy_url
+                    return
+            except Exception:
+                continue
+                
+        logger.warning("使用可能なプロキシが見つかりませんでした。プロキシなしで続行します。")
+    except Exception as e:
+        logger.error(f"プロキシリストの取得中にエラーが発生しました: {e}")
 
 # Pydantic models for log responses (for API endpoints)
 class ApiLogResponse(BaseModel):
@@ -70,8 +229,13 @@ def log_api_call(db: Session, endpoint: str, status: int):
 
 def log_match_found(db: Session, keyword: str, title: str):
     """
-    発見した書籍をDB2に記録
-    同じタイトルのものは1時間に1回のみ記録する
+    検索条件に合致した商品をデータベースに記録します。
+    過剰な記録を防ぐため、同じタイトルの商品は1時間以内に一度だけ記録されるように制限されています。
+
+    Args:
+        db (Session): SQLAlchemy データベースセッション
+        keyword (str): 検索に使用されたキーワード
+        title (str): 合致した商品のタイトル
     """
     try:
         # 1時間以内に同じタイトルが記録されているかチェック
@@ -90,12 +254,18 @@ def log_match_found(db: Session, keyword: str, title: str):
         db.add(match_log)
         db.commit()
     except Exception as e:
+        db.rollback()
         logger.error(f"DB2 Logging Error: {e}")
 
-app = FastAPI(title="BOOKOFF Search API", version="1.0.0")
-
 def normalize_text(text: str) -> str:
-    """比較のためにテキストを正規化（全角半角統一、記号・空白削除、小文字化）"""
+    """
+    文字列の比較精度を高めるために、全角半角の統一、記号や空白の除去、および小文字化を行います。
+
+    Args:
+        text (str): 正規化対象の文字列
+    Returns:
+        str: 正規化された文字列
+    """
     if not text:
         return ""
     # NFKC正規化で全角英数字・記号を半角に変換
@@ -108,70 +278,216 @@ def normalize_text(text: str) -> str:
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:123.0) Gecko/20100101 Firefox/123.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
 ]
 
 def get_random_headers() -> dict:
     """
-    ランダムなUser-Agentと一般的なブラウザヘッダーを生成して返す
-    これにより、ボットとして検知されるリスクを低減する
+    ボット検知を回避するため、ランダムな User-Agent と標準的なブラウザヘッダーを生成します。
+
+    Returns:
+        dict: ブラウザを模倣したHTTPヘッダー辞書
     """
+    user_agent = random.choice(USER_AGENTS)
+    platform = '"Windows"' if 'Windows' in user_agent else '"macOS"'
+
     return {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-        "Referer": random.choice([
-            "https://shopping.bookoff.co.jp/",
-            "https://www.google.com/",
-            "https://search.yahoo.co.jp/"
-        ]),
-        "Connection": "keep-alive",
+        "User-Agent": user_agent,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
+        "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "max-age=0",
+        "Pragma": "no-cache",
+        "DNT": "1",
         "Upgrade-Insecure-Requests": "1",
         "Sec-Fetch-Dest": "document",
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-User": "?1"
+        "Sec-Fetch-User": "?1",
+        "Sec-GPC": "1",
+        "sec-ch-ua": '"Google Chrome";v="124", "Chromium";v="124", "Not:A-Brand";v="99"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": platform,
+        "Referer": "https://shopping.bookoff.co.jp/"
     }
 
-def fetch_with_retry(url: str, headers: dict, retries: int = 5, backoff_factor: float = 3.0):
-    """BOOKOFFリクエスト: エラー(429/5xx/接続拒否など)時のみリトライ。requests.Sessionを使用し、よりブラウザに近い挙動を模倣。"""
+def initialize_bookoff_session(session: requests.Session, headers: dict):
+    """
+    引数で受け取った requests セッションに対し、ヘッダー、プロキシ設定を適用し、
+    BOOKOFFのトップページにアクセスして必要なクッキーを初期化します。
+
+    Args:
+        session (requests.Session): 設定対象のセッション
+        headers (dict): 適用するヘッダー辞書
+    """
+    session.trust_env = False
+    session.headers.update(headers)
+    session.headers['Accept-Encoding'] = 'gzip, deflate, br'
+
+    if BOOKOFF_PROXY_URL:
+        session.proxies = {"http": BOOKOFF_PROXY_URL, "https": BOOKOFF_PROXY_URL}
+    else:
+        session.proxies = {}
+
+    # 少しだけランダムな待機を挿入して、自然なブラウジング挙動を模倣
+    time.sleep(random.uniform(0.5, 1.5))
+
+    try:
+        resp = session.get("https://shopping.bookoff.co.jp/", timeout=20)
+        logger.debug(f"Bookoff session init home status={resp.status_code}, cookies={session.cookies.get_dict()}")
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Bookoff セッション初期化時に警告が発生しました: {e}")
+
+
+@dataclass
+class BrowserResponse:
+    """
+    Playwright で取得したレスポンスを requests 互換のインターフェースで保持するためのデータクラス。
+    """
+    status_code: int
+    content: bytes
+    url: str
+
+    def raise_for_status(self):
+        """ステータスコードがエラー（400以上）の場合に例外をスローします。"""
+        if 400 <= self.status_code:
+            raise requests.exceptions.HTTPError(f"{self.status_code} Server Error: {self.url}")
+
+
+async def fetch_with_playwright(url: str, headers: dict = None, timeout: int = 30) -> BrowserResponse:
+    """
+    Playwright (Chromium) を使用して指定されたURLのページをレンダリングし、HTMLコンテンツを取得します。
+    JavaScriptの実行が必要なページや、単純なHTTPリクエストがブロックされる場合に有効です。
+
+    Args:
+        url (str): 取得対象のURL
+        headers (dict, optional): カスタムヘッダー
+        timeout (int): タイムアウト秒数
+    Returns:
+        BrowserResponse: ステータスコードとコンテンツを含むオブジェクト
+    """
+    if not PLAYWRIGHT_AVAILABLE:
+        raise RuntimeError("Playwright is not installed")
+
+    browser = None
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"])
+            context = await browser.new_context(
+                user_agent=headers.get("User-Agent") if headers and "User-Agent" in headers else random.choice(USER_AGENTS),
+                locale="ja-JP",
+                viewport={"width": 1920, "height": 1080},
+                java_script_enabled=True,
+                accept_downloads=False,
+                bypass_csp=True,
+                color_scheme="light"
+            )
+            await context.set_extra_http_headers({
+                "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
+                "DNT": "1",
+                "Sec-GPC": "1",
+                "Upgrade-Insecure-Requests": "1"
+            })
+            page = await context.new_page()
+            referer = headers.get("Referer") if headers and "Referer" in headers else "https://shopping.bookoff.co.jp/"
+            # networkidle は遅いため、load (または commit) に変更
+            response = await page.goto(url, wait_until="load", timeout=timeout * 1000, referer=referer)
+            if response is None:
+                raise RuntimeError("Playwright failed to load the page")
+            html = await page.content()
+            status = response.status if response.status is not None else 200
+            return BrowserResponse(status_code=status, content=html.encode("utf-8"), url=url)
+    finally:
+        if browser:
+            await browser.close()
+
+
+async def fetch_with_retry(url: str, headers: dict = None, retries: int = 5, backoff_factor: float = 3.0):
+    """
+    BOOKOFFサイトへのリクエストをリトライ機能付きで実行します。
+    Playwrightが利用可能な場合はブラウザレンダリングを優先し、失敗した場合は requests セッションへフォールバックします。
+    指数バックオフを用いた待機処理を含みます。
+
+    Args:
+        url (str): リクエスト先URL
+        headers (dict, optional): HTTPヘッダー
+        retries (int): 最大リトライ回数
+        backoff_factor (float): バックオフ計算の係数
+    Returns:
+        Union[BrowserResponse, requests.Response]: レスポンスオブジェクト
+    """
+    global _playwright_failed
+    import asyncio
     status_forcelist = {429, 500, 502, 503, 504}
-
-    # requests.Session を使用して、クッキーと接続プールを管理し、よりブラウザに近い挙動を模倣
-    session = requests.Session()
-    session.headers.update(headers) # 初期ヘッダーをセッションに適用
-    session.headers['Accept-Encoding'] = 'gzip, deflate, br' # Accept-Encoding を明示的に追加
-
-    # 初回アクセス前にわずかなランダム待機（ボット検知回避と自然なアクセス間隔）
-    time.sleep(random.uniform(4.0, 8.0))
 
     for attempt in range(1, retries + 1):
         try:
-            response = session.get(url, timeout=20) # タイムアウトを20秒に延長
-            logger.info(f"fetch_with_retry: attempt={attempt}, status={response.status_code}, url={url}")
+            # ランダムな待機（ボット検知回避と自然なアクセス間隔）
+            wait_time = random.uniform(1.0, 2.0) if attempt == 1 else random.uniform(4.0, 7.0)
+            await asyncio.sleep(wait_time)
 
-            if response.status_code in status_forcelist:
+            # 1. まずは高速な requests で試行
+            session = get_global_bookoff_session()
+            request_headers = dict(session.headers)
+            if headers:
+                request_headers.update(headers)
+            request_headers['Referer'] = "https://shopping.bookoff.co.jp/"
+            request_headers['Accept-Encoding'] = "gzip, deflate, br"
+            request_headers['Connection'] = "keep-alive"
+            request_headers['Upgrade-Insecure-Requests'] = "1"
+            request_headers['Sec-Fetch-Dest'] = "document"
+            request_headers['Sec-Fetch-Mode'] = "navigate"
+            request_headers['Sec-Fetch-Site'] = "same-origin"
+            request_headers['Sec-Fetch-User'] = "?1"
+            request_headers['sec-ch-ua-mobile'] = "?0"
+            request_headers['sec-ch-ua-platform'] = '"Windows"'
+            request_headers['Sec-GPC'] = "1"
+
+            try:
+                response = session.get(url, headers=request_headers, timeout=20)
+                
+                # もし 503 や 403 でブロックされた場合、Playwright に切り替えてリトライ
+                if response.status_code in status_forcelist or response.status_code == 403:
+                    if PLAYWRIGHT_AVAILABLE and not _playwright_failed:
+                        logger.info(f"Requests blocked (status={response.status_code}). Switching to Playwright...")
+                        response = await fetch_with_playwright(url, headers=headers, timeout=20)
+            except Exception as e:
+                if PLAYWRIGHT_AVAILABLE and not _playwright_failed:
+                    logger.warning(f"Requests failed: {e}. Retrying with Playwright...")
+                    response = await fetch_with_playwright(url, headers=headers, timeout=20)
+                else:
+                    raise
+
+            status = response.status_code
+            logger.info(f"fetch_with_retry: attempt={attempt}, status={status}, url={url}")
+
+            if status in status_forcelist:
                 if attempt == retries:
-                    response.raise_for_status() # 最終試行でエラーの場合も例外を発生させる
-                sleep_seconds = backoff_factor * attempt + random.uniform(0, 1) # ランダムなジッターを追加
-                logger.warning(f"リトライ対象エラー: status={response.status_code}。{sleep_seconds:.2f}s後に再試行します ({attempt}/{retries})")
-                time.sleep(sleep_seconds)
+                    response.raise_for_status()
+                sleep_seconds = backoff_factor * attempt + random.uniform(1, 3)
+                logger.warning(f"リトライ対象エラー: status={status}。{sleep_seconds:.2f}s後に再試行します ({attempt}/{retries})")
+                await asyncio.sleep(sleep_seconds)
                 continue
 
-            # 成功 200、404などはここでリトライ停止
             response.raise_for_status()
             return response
 
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
+            if isinstance(e, requests.exceptions.RequestException):
+                if attempt == retries:
+                    logger.error(f"fetch_with_retry: 最終試行失敗: {e}")
+                    raise
+                sleep_seconds = backoff_factor * attempt + random.uniform(1, 3)
+                logger.warning(f"リクエストエラー: {e}。{sleep_seconds:.2f}s後に再試行します ({attempt}/{retries})")
+                await asyncio.sleep(sleep_seconds)
+                continue
             if attempt == retries:
                 logger.error(f"fetch_with_retry: 最終試行失敗: {e}")
                 raise
-            sleep_seconds = backoff_factor * attempt + random.uniform(0, 1) # ランダムなジッターを追加
-            logger.warning(f"リクエストエラー: {e}。{sleep_seconds:.2f}s後に再試行します ({attempt}/{retries})")
-            time.sleep(sleep_seconds)
+            sleep_seconds = backoff_factor * attempt + random.uniform(1, 3)
+            logger.warning(f"一般エラー: {e}。{sleep_seconds:.2f}s後に再試行します ({attempt}/{retries})")
+            await asyncio.sleep(sleep_seconds)
+            continue
 
     raise RuntimeError("fetch_with_retry: リトライ上限に到達しました")
 
@@ -299,7 +615,7 @@ async def search_bookoff(request: SearchRequest, db: Session = Depends(get_db)):
         headers = get_random_headers()
 
         # BOOKOFFアクセス（エラー状態時のみ5回リトライ）
-        response = fetch_with_retry(search_url, headers=headers, retries=5, backoff_factor=3.0)
+        response = await fetch_with_retry(search_url, headers=headers, retries=5, backoff_factor=3.0)
 
         # HTMLをパース
         soup = BeautifulSoup(response.content, "html.parser")
@@ -414,7 +730,7 @@ async def check_stock(request: SearchRequest, db: Session = Depends(get_db)):
         headers = get_random_headers()
         
         # BOOKOFFアクセス（エラー状態時のみ5回リトライ）
-        response = fetch_with_retry(search_url, headers=headers, retries=5, backoff_factor=3.0)
+        response = await fetch_with_retry(search_url, headers=headers, retries=5, backoff_factor=3.0)
 
         # HTMLをパース
         soup = BeautifulSoup(response.content, "html.parser")
@@ -535,7 +851,6 @@ async def check_stock(request: SearchRequest, db: Session = Depends(get_db)):
 
 
 if __name__ == "__main__":
-    init_db_tables() # アプリケーション起動時にテーブルを初期化
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.getenv("PORT", 8000)) # os.environ.get から os.getenv に変更し、.envから読み込む
     uvicorn.run(app, host="0.0.0.0", port=port)

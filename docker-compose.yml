@@ -6,8 +6,10 @@ services:
       context: .
       dockerfile: backend.Dockerfile
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
+      - bookoff_data:/app/data
+      - bookoff_logs:/app/logs
+    env_file:
+      - ./.env
     environment:
       - DATA_DIR=/app/data
       - TZ=Asia/Tokyo
@@ -19,11 +21,17 @@ services:
       context: .
       dockerfile: frontend.Dockerfile
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
+      - bookoff_data:/app/data
+      - bookoff_logs:/app/logs
+    env_file:
+      - .env
     environment:
       - DATA_DIR=/app/data
       - TZ=Asia/Tokyo
       - BACKEND_URL=http://bookoff_search_backend:8000
     ports:
       - "8501:8501"
+
+volumes:
+  bookoff_data:
+  bookoff_logs:
