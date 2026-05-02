@@ -8,23 +8,36 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # システムパッケージのインストールとユーザーの作成
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     build-essential \
     curl \
+    ca-certificates \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -m -U appuser
+    && groupadd -r appuser \
+    && useradd -r -g appuser -m -d /home/appuser appuser
 
 # Pythonパッケージのインストール
 COPY requirements_backend.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements_backend.txt
 
-# アプリケーションコードのコピー
-COPY app/ .
+# Playwrightのシステム依存関係をrootユーザーでインストール
+RUN playwright install-deps chromium
 
-# 所有権の変更とユーザーの切り替え
-RUN chown -R appuser:appuser /app
+# Playwrightブラウザのインストール先とデータディレクトリの準備
+ENV HOME=/home/appuser
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/appuser/.cache/ms-playwright
+
+# アプリケーションコードのコピー
+COPY --chown=appuser:appuser app/ .
+
+# Playwrightのキャッシュとデータディレクトリを準備し、/app全体の所有権をappuserに一括設定
+RUN mkdir -p /home/appuser/.cache/ms-playwright /app/data && \
+    chown -R appuser:appuser /home/appuser /app
+
 USER appuser
+RUN python -m playwright install chromium
 
 # ヘルスチェック
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
