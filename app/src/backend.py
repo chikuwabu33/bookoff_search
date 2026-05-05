@@ -19,9 +19,15 @@ import unicodedata
 import re
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from database import get_db, init_db_tables
 from models import ApiLog, MatchLog
+
+JST = timezone(timedelta(hours=9))
+
+def get_jst_now():
+    """JST (日本標準時) の現在時刻を naive datetime として取得"""
+    return datetime.now(JST).replace(tzinfo=None)
 
 try:
     from playwright.async_api import async_playwright
@@ -219,7 +225,7 @@ def log_api_call(db: Session, endpoint: str, status: int):
         db.add(api_log)
         
         # 3日分を過ぎたレコードを削除
-        three_days_ago = datetime.now() - timedelta(days=3)
+        three_days_ago = get_jst_now() - timedelta(days=3)
         db.query(ApiLog).filter(ApiLog.timestamp < three_days_ago).delete()
         
         db.commit()
@@ -239,7 +245,7 @@ def log_match_found(db: Session, keyword: str, title: str):
     """
     try:
         # 1時間以内に同じタイトルが記録されているかチェック
-        one_hour_ago = datetime.now() - timedelta(hours=1)
+        one_hour_ago = get_jst_now() - timedelta(hours=1)
         existing_log = db.query(MatchLog).filter(
             MatchLog.title == title,
             MatchLog.timestamp > one_hour_ago
@@ -545,14 +551,14 @@ def read_root():
 @app.get("/api/logs/api_calls", response_model=List[ApiLogResponse])
 async def get_api_logs_backend(db: Session = Depends(get_db), limit: int = 50):
     """API実行ログを取得"""
-    # timestampはDBに保存されたUTC時刻なので、そのまま返す
+    # timestampはDBに保存されたJST時刻なので、そのまま返す
     logs = db.query(ApiLog).order_by(ApiLog.timestamp.desc()).limit(limit).all()
     return logs
 
 @app.get("/api/logs/match_history", response_model=List[MatchLogResponse])
 async def get_match_history_backend(db: Session = Depends(get_db), limit: int = 50):
     """発見履歴ログを取得"""
-    # timestampはDBに保存されたUTC時刻なので、そのまま返す
+    # timestampはDBに保存されたJST時刻なので、そのまま返す
     logs = db.query(MatchLog).order_by(MatchLog.timestamp.desc()).limit(limit).all()
     return logs
 
