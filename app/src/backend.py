@@ -29,6 +29,29 @@ def get_jst_now():
     """JST (日本標準時) の現在時刻を naive datetime として取得"""
     return datetime.now(JST).replace(tzinfo=None)
 
+def is_within_search_time(start_hour: int, end_hour: int) -> bool:
+    """
+    現在時刻が指定された検索時間内（JST）であるか判定します。
+    
+    Args:
+        start_hour (int): 開始時刻 (0-23)
+        end_hour (int): 終了時刻 (0-23)
+    Returns:
+        bool: 検索可能時間内であれば True
+    """
+    now = get_jst_now()
+    hour = now.hour
+    
+    if start_hour == end_hour:
+        return True  # 同じ時間設定なら24時間稼働とみなす
+        
+    if start_hour < end_hour:
+        # 例: 9時から18時
+        return start_hour <= hour < end_hour
+    else:
+        # 例: 22時から翌日5時 (日を跨ぐ場合)
+        return hour >= start_hour or hour < end_hour
+
 try:
     from playwright.async_api import async_playwright
     PLAYWRIGHT_AVAILABLE = True
@@ -546,6 +569,14 @@ def read_root():
     """ルートパスへのアクセスに対する応答（ヘルスチェック用）"""
     return {"message": "BOOKOFF Search API is running"}
 
+@app.get("/api/config/check_time")
+async def check_search_time(start_hour: int = 0, end_hour: int = 0):
+    """フロントエンドから検索時間枠内かどうかを確認するためのエンドポイント"""
+    is_active = is_within_search_time(start_hour, end_hour)
+    return {
+        "is_within_window": is_active,
+        "current_time_jst": get_jst_now().strftime("%Y-%m-%d %H:%M:%S")
+    }
 
 # --- ログ取得・削除用APIエンドポイント ---
 @app.get("/api/logs/api_calls", response_model=List[ApiLogResponse])
