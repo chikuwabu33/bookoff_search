@@ -173,12 +173,20 @@ def is_within_search_window() -> bool:
     """
     # JST (UTC+9) タイムゾーンを指定して現在時刻を取得
     jst = datetime.timezone(datetime.timedelta(hours=9))
-    now_hour = datetime.datetime.now(jst).hour # JSTの現在時刻
+    now = datetime.datetime.now(jst)
+    now_hour = now.hour # JSTの現在時刻
     # 設定値から開始・終了時刻を取得
     search_start_hour = int(st.session_state.settings.get("search_start_hour", DEFAULT_SEARCH_START_HOUR))
     search_end_hour = int(st.session_state.settings.get("search_end_hour", DEFAULT_SEARCH_END_HOUR))
-    # search_end_hour は含まない (例: 24なら23:59までOK)
-    return search_start_hour <= now_hour < search_end_hour
+
+    if search_start_hour == search_end_hour:
+        return True  # 開始と終了が同じなら24時間稼働とみなす
+    if search_start_hour < search_end_hour:
+        # 通常の範囲判定 (例: 8時から17時)
+        return search_start_hour <= now_hour < search_end_hour
+    else:
+        # 日を跨ぐ場合 (例: 22時から翌5時)
+        return now_hour >= search_start_hour or now_hour < search_end_hour
 
 def get_effective_interval_seconds() -> int:
     """
@@ -1012,7 +1020,7 @@ def main():
                     display_result_card(keyword, st.session_state.stock_results[keyword])
 
     # 自動検索モード時の待機処理 (全ての描画が終わった後に行う)
-    if st.session_state.auto_loop and st.session_state.last_run_time and is_within_search_window():
+    if st.session_state.auto_loop and st.session_state.last_run_time:
         total_sec = get_effective_interval_seconds()
         now = datetime.datetime.now()
         elapsed = (now - st.session_state.last_run_time).total_seconds()
@@ -1022,7 +1030,13 @@ def main():
             remaining_sec = max(0, int(total_sec - elapsed))
             progress = min(1.0, max(0.0, elapsed / total_sec))
             
-            status_container.progress(progress, text=f"次回の検索まであと {remaining_sec} 秒")
+            # 稼働時間内かどうかでメッセージを切り替え
+            if is_within_search_window():
+                status_text = f"次回の検索まであと {remaining_sec} 秒"
+            else:
+                status_text = f"稼働時間外のため待機中... 次の判定まで {remaining_sec} 秒"
+            
+            status_container.progress(progress, text=status_text)
             
             # 長時間のブロッキングを避けるため、ループではなく1秒待機してrerunします。
             # これによりセッションの安定性が向上し、内部的なKeyError（$$WIDGET_ID）を防ぐことができます。
