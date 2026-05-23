@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from fastapi import Depends
+import asyncio
 import requests
 from contextlib import asynccontextmanager
 from bs4 import BeautifulSoup
@@ -18,12 +19,19 @@ import urllib.parse # Keep this for search query encoding
 import unicodedata
 import re
 import os
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from database import get_db, init_db_tables
 from models import ApiLog, MatchLog
 
 JST = timezone(timedelta(hours=9))
+
+# 設定共有用ファイルパス
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
+KEYWORDS_FILE = os.path.join(DATA_DIR, "keywords.json")
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
+WEBHOOK_URL = "https://trigger.macrodroid.com/44e2df0f-7ca1-48e3-9d14-74434fa947e8/BOOKOFF"
 
 def get_jst_now():
     """JST (日本標準時) の現在時刻を naive datetime として取得"""
@@ -144,12 +152,207 @@ def get_global_bookoff_session():
 #            logger.warning(f"Failed to initialize/warm up global Bookoff session: {e}")
     return _global_bookoff_session
 
+async def send_webhook_notification(product_name: str, product_url: str) -> bool:
+    """外部通知ツール (MacroDroid等) へ Webhook を送信します"""
+    try:
+        params = {"product": product_name, "url": product_url}
+        # MacroDroidなどはGETリクエストでのパラメータ受け渡しが一般的です
+        resp = requests.get(WEBHOOK_URL, params=params, timeout=10)
+        if resp.status_code == 200:
+            logger.info(f"Webhook通知成功: {product_name}")
+            return True
+        logger.error(f"Webhook通知失敗: {resp.status_code}")
+        return False
+    except Exception as e:
+        logger.error(f"Webhook通知エラー: {e}")
+        return False
+
+async def _internal_check_stock_logic(keyword: str, db: Session) -> dict:
+    """在庫確認のコアロジック。APIとバックグラウンドタスクで共有されます。"""
+    keyword = keyword.strip()
+    if not keyword:
+        return {"error": True, "message": "検索クエリが空です"}
+
+    try:
+        # BOOKOFF検索URL作成（括弧をスペースに置換）
+        search_query = re.sub(r'\s+', ' ', keyword.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')).strip() + " "
+        encoded_keyword = urllib.parse.quote(search_query)
+        search_url = f"https://shopping.bookoff.co.jp/search/keyword/{encoded_keyword}"
+        
+        headers = get_random_headers()
+        response = await fetch_with_retry(search_url, headers=headers, retries=5, backoff_factor=3.0)
+        soup = BeautifulSoup(response.content, "html.parser")
+        
+        results = []
+        items = soup.find_all("div", class_="productItem")
+        
+        for item in items[:50]:
+            try:
+                title_elem = item.find("p", class_="productItem__title")
+                if not title_elem: continue
+                title = title_elem.get_text(strip=True) or title_elem.get('title', '')
+
+                item_text = item.get_text()
+                if "カート" not in item_text or "在庫なし" in item_text or "品切れ" in item_text:
+                    continue
+                
+                price_elem = item.find("p", class_="productItem__price")
+                price = price_elem.get_text(strip=True) if price_elem else "価格不明"
+                
+                url_elem = item.find("a", class_="productItem__link") or item.find("a", class_="productItem__image")
+                url = url_elem.get("href") if url_elem else ""
+                if url and not url.startswith("http"):
+                    url = "https://shopping.bookoff.co.jp" + url
+                
+                img_elem = item.find("img")
+                image_url = img_elem.get("src", "") if img_elem else ""
+                
+                if title and url:
+                    results.append({
+                        "title": title, "price": price, "url": url, "image_url": image_url
+                    })
+            except Exception:
+                continue
+
+        keywords_parts = re.split(r'[()（）\s]', keyword)
+        normalized_parts = [normalize_text(p) for p in keywords_parts if p]
+        
+        fully_matching = [
+            r for r in results 
+            if all(part in normalize_text(r["title"]) for part in normalized_parts)
+        ]
+        
+        partial_matching = [
+            r for r in results 
+            if any(part in normalize_text(r["title"]) for part in normalized_parts)
+        ]
+        
+        if fully_matching:
+            for r in fully_matching:
+                log_match_found(db, keyword, r["title"])
+            return {
+                "in_stock": True, "matching_count": len(fully_matching),
+                "match_type": "完全一致", "products": fully_matching[:10]
+            }
+        elif partial_matching:
+            for r in partial_matching:
+                log_match_found(db, keyword, r["title"])
+            return {
+                "in_stock": True, "matching_count": len(partial_matching),
+                "match_type": "部分一致", "products": partial_matching[:10]
+            }
+        else:
+            return {"in_stock": False, "matching_count": 0, "match_type": "在庫なし", "products": []}
+    except Exception as e:
+        logger.error(f"コア在庫確認ロジックエラー: {e}")
+        raise e
+
+async def background_search_loop():
+    """
+    バックエンドで自律的に在庫検索を実行するバックグラウンドタスク。
+    24時間365日の稼働を想定し、settings.json の設定に基づき周期的に実行します。
+    """
+    logger.info("自律検索バックグラウンドタスクを開始しました")
+    
+    while True:
+        try:
+            # 設定とキーワードの読み込み
+            settings = {}
+            if os.path.exists(SETTINGS_FILE):
+                try:
+                    with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                        settings = json.load(f)
+                except Exception as e:
+                    logger.error(f"設定ファイル読み込み失敗: {e}")
+
+            auto_loop = settings.get("auto_loop", False)
+            interval = settings.get("interval_seconds", 60)
+            start_hour = settings.get("search_start_hour", 8)
+            end_hour = settings.get("search_end_hour", 17)
+
+            if auto_loop:
+                if is_within_search_time(start_hour, end_hour):
+                    keywords = []
+                    if os.path.exists(KEYWORDS_FILE):
+                        try:
+                            with open(KEYWORDS_FILE, "r", encoding="utf-8") as f:
+                                keywords = json.load(f)
+                        except Exception as e:
+                            logger.error(f"キーワードファイル読み込み失敗: {e}")
+
+                    if keywords:
+                        logger.info(f"自律検索開始: {len(keywords)} 件のキーワード")
+                        from database import SessionLocal
+                        db = SessionLocal()
+                        try:
+                            today_str = get_jst_now().date().isoformat()
+                            last_sent = settings.get("last_notification_sent_date", "")
+                            
+                            for i, keyword in enumerate(keywords):
+                                if i > 0:
+                                    await asyncio.sleep(random.uniform(3.0, 7.0))
+                                
+                                res = await _internal_check_stock_logic(keyword, db)
+                                log_api_call(db, "background_auto_search", 200)
+                                
+                                if res.get("in_stock") and last_sent != today_str:
+                                    products = res.get("products", [])
+                                    if products:
+                                        p = products[0]
+                                        msg = f"{keyword} ({p['title'][:20]}...)"
+                                        if await send_webhook_notification(msg, p['url']):
+                                            # 通知成功したら設定ファイルを更新（1日1回制限のため）
+                                            settings["last_notification_sent_date"] = today_str
+                                            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                                                json.dump(settings, f, ensure_ascii=False, indent=2)
+                                            last_sent = today_str # ループ内での重複送信防止
+                        except Exception as e:
+                            logger.error(f"自律検索ループ内エラー: {e}")
+                            log_api_call(db, "background_auto_search", 500)
+                        finally:
+                            db.close()
+                else:
+                    logger.debug("自律検索: 現在は検索時間外です")
+            
+            # 次の実行まで待機
+            await asyncio.sleep(max(10, interval))
+
+        except asyncio.CancelledError:
+            logger.info("自律検索バックグラウンドタスクが停止されました")
+            break
+        except Exception as e:
+            logger.error(f"background_search_loop で致命的なエラー: {e}")
+            await asyncio.sleep(60)
+
+async def keep_alive_loop():
+    """
+    Renderのスリープを防止するためのセルフピングタスク。
+    10分おきに自身のヘルスチェックエンドポイントにアクセスします。
+    """
+    if not BACKEND_URL:
+        logger.warning("BACKEND_URL が設定されていないため、Keep-alive タスクをスキップします。")
+        return
+
+    logger.info(f"Keep-alive タスクを開始しました。ターゲット: {BACKEND_URL}")
+    # 起動直後の即時実行を避けるための待機
+    await asyncio.sleep(60)
+
+    while True:
+        try:
+            # Renderの15分制限に対し、余裕を持って10分（600秒）おきに実行
+            resp = requests.get(f"{BACKEND_URL}/health", timeout=15)
+            logger.debug(f"Keep-alive ping sent: {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"Keep-alive ping failed: {e}")
+        
+        await asyncio.sleep(600)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # データベースディレクトリの作成と権限確認
-    db_url = os.getenv("DATABASE_URL", "sqlite:///./data/bookoff_search.db")
+    db_url = os.getenv("DATABASE_URL", f"sqlite:///{DATA_DIR}/bookoff_search.db")
     if "sqlite" in db_url:
-        data_dir = os.getenv("DATA_DIR", "/app/data")
+        data_dir = DATA_DIR
         os.makedirs(data_dir, exist_ok=True)
         # 書き込み権限テスト
         test_file = os.path.join(data_dir, ".write_test")
@@ -162,8 +365,20 @@ async def lifespan(app: FastAPI):
 
     init_db_tables()
     setup_automatic_proxy()
+
+    # タスクの管理
+    search_task = asyncio.create_task(background_search_loop())
+    keep_alive_task = asyncio.create_task(keep_alive_loop())
+
     yield
-    # Clean up resources if necessary
+    # 終了時にタスクをキャンセル
+    search_task.cancel()
+    keep_alive_task.cancel()
+    try:
+        await asyncio.gather(search_task, keep_alive_task)
+    except asyncio.CancelledError:
+        pass
+    logger.info("バックグラウンドタスクを正常に終了しました")
 
 app = FastAPI(title="BOOKOFF Search API", version="1.0.0", lifespan=lifespan)
 
@@ -750,130 +965,17 @@ async def check_stock(request: SearchRequest, db: Session = Depends(get_db)):
         在庫確認結果（in_stock: True/False）
     """
     keyword = request.query.strip()
-    
-    if not keyword:
-        raise HTTPException(status_code=400, detail="検索クエリが入力されていません")
-    
     try:
-        logger.info(f"在庫確認開始: {keyword}")
-        
-        # BOOKOFF検索URL
-        # 検索精度向上のため、括弧をスペースに置き換えて検索
-        search_query = re.sub(r'\s+', ' ', keyword.replace('(', ' ').replace(')', ' ').replace('（', ' ').replace('）', ' ')).strip() + " "
-        encoded_keyword = urllib.parse.quote(search_query)
-        search_url = f"https://shopping.bookoff.co.jp/search/keyword/{encoded_keyword}"
-        
-        # ヘッダー設定（ランダムなUser-Agentを使用）
-        headers = get_random_headers()
-        
-        # BOOKOFFアクセス（エラー状態時のみ5回リトライ）
-        response = await fetch_with_retry(search_url, headers=headers, retries=5, backoff_factor=3.0)
-
-        # HTMLをパース
-        soup = BeautifulSoup(response.content, "html.parser")
-        
-        # 検索結果を抽出
-        results = []
-        items = soup.find_all("div", class_="productItem")
-        logger.info(f"在庫確認: アイテム数 {len(items)}")
-        
-        for item in items[:50]:  # 最初の50件を確認
-            try:
-                title_elem = item.find("p", class_="productItem__title")
-                if not title_elem:
-                    continue
-                title = title_elem.get_text(strip=True)
-                if not title:
-                    title = title_elem.get('title', '')
-
-                # 在庫判定
-                item_text = item.get_text()
-                has_cart_button = "カート" in item_text and "在庫なし" not in item_text and "品切れ" not in item_text
-                if not has_cart_button:
-                    continue
-                
-                if not title:
-                    continue
-                
-                price_elem = item.find("p", class_="productItem__price")
-                price = price_elem.get_text(strip=True) if price_elem else "価格不明"
-                
-                url_elem = item.find("a", class_="productItem__link") or item.find("a", class_="productItem__image")
-                url = url_elem.get("href") if url_elem else ""
-                
-                if url and not url.startswith("http"):
-                    url = "https://shopping.bookoff.co.jp" + url
-                
-                img_elem = item.find("img")
-                image_url = img_elem.get("src", "") if img_elem else ""
-                
-                if title and url:
-                    results.append(
-                        SearchResult(
-                            title=title,
-                            price=price,
-                            url=url,
-                            image_url=image_url
-                        )
-                    )
-            except Exception as e:
-                logger.warning(f"商品情報の抽出エラー: {e}")
-                continue
-        
-        # キーワードを「空白」や「括弧」などの記号で細かく分割して判定を柔軟にする
-        # 例: "転生したらスライムだった件(31)" -> ["転生したらスライムだった件", "31"]
-        keywords_parts = re.split(r'[()（）\s]', keyword)
-        normalized_parts = [normalize_text(p) for p in keywords_parts if p]
-        logger.info(f"判定用キーワードパーツ: {normalized_parts}")
-        
-        # 全てのキーワードパーツ（タイトルと数字の両方）が含まれているものを抽出
-        fully_matching = [
-            r for r in results 
-            if all(part in normalize_text(r.title) for part in normalized_parts)
-        ]
-        
-        # 部分一致：いずれかのキーワード部分を含む商品
-        partial_matching = [
-            r for r in results 
-            if any(part in normalize_text(r.title) for part in normalized_parts)
-        ]
-        
-        # 結果を判定
-        if fully_matching:
-            logger.info(f"在庫確認完了: {keyword} - 完全一致 {len(fully_matching)} 件")
-            for r in fully_matching:
-                log_match_found(db, keyword, r.title)
-            log_api_call(db, "/api/stock", 200)
-            return StockCheckResponse(
-                keyword=keyword,
-                in_stock=True,
-                matching_count=len(fully_matching),
-                match_type="完全一致",
-                products=fully_matching[:10]  # 最大10件まで返す
-            )
-        elif partial_matching:
-            logger.info(f"在庫確認完了: {keyword} - 部分一致 {len(partial_matching)} 件")
-            for r in partial_matching:
-                log_match_found(db, keyword, r.title)
-            log_api_call(db, "/api/stock", 200)
-            return StockCheckResponse(
-                keyword=keyword,
-                in_stock=True,
-                matching_count=len(partial_matching),
-                match_type="部分一致",
-                products=partial_matching[:10]
-            )
-        else:
-            logger.info(f"在庫確認完了: {keyword} - 在庫なし")
-            log_api_call(db, "/api/stock", 200)
-            return StockCheckResponse(
-                keyword=keyword,
-                in_stock=False,
-                matching_count=0,
-                match_type="在庫なし",
-                products=[]
-            )
-        
+        logger.info(f"API在庫確認開始: {keyword}")
+        res = await _internal_check_stock_logic(keyword, db)
+        log_api_call(db, "/api/stock", 200)
+        return StockCheckResponse(
+            keyword=keyword,
+            in_stock=res.get("in_stock", False),
+            matching_count=res.get("matching_count", 0),
+            match_type=res.get("match_type", "在庫なし"),
+            products=[SearchResult(**p) for p in res.get("products", [])]
+        )
     except requests.exceptions.RequestException as e:
         logger.error(f"リクエストエラー: {e}")
         raise HTTPException(
