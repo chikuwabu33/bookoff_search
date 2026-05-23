@@ -657,25 +657,6 @@ def display_result_card(keyword: str, result: Dict):
 def main():
     initialize_session_state()
     
-    # --- 自動検索の実行判定 (描画前) ---
-    if st.session_state.auto_loop:
-        current_interval_sec = get_effective_interval_seconds()
-        now = datetime.datetime.now()
-        should_run = False
-        
-        if st.session_state.last_run_time is None:
-            should_run = True
-        else:
-            elapsed = (now - st.session_state.last_run_time).total_seconds()
-            if elapsed >= current_interval_sec:
-                should_run = True
-        
-        if should_run:
-            if is_within_search_window() and st.session_state.keywords:
-                # 自動検索は通常モード (force=False)
-                execute_search_batch(force=False)
-            st.session_state.last_run_time = now
-    
     # ヘッダー
     st.title("📚 BOOKOFF 在庫確認")
     st.markdown("---")
@@ -712,10 +693,10 @@ def main():
         
         col1, col2 = st.columns(2)
         with col1:
-            st.button("➕ 追加", use_container_width=True, on_click=add_keyword_callback)
+            st.button("➕ 追加", width="stretch", on_click=add_keyword_callback)
         
         with col2:
-            if st.button("🗑️ すべてクリア", use_container_width=True):
+            if st.button("🗑️ すべてクリア", width="stretch"):
                 st.session_state.keywords = []
                 save_keywords([])
                 st.rerun()
@@ -729,7 +710,7 @@ def main():
                 with col1:
                     st.write(f"📌 {keyword}")
                 with col2:
-                    if st.button("❌", key=f"remove_{keyword}", use_container_width=True):
+                    if st.button("❌", key=f"remove_{keyword}", width="stretch"):
                         remove_keyword(keyword)
                         st.rerun()
         else:
@@ -767,7 +748,7 @@ def main():
             
             st.caption(f"検索実行時間帯: {int(st.session_state.settings['search_start_hour'])}:00 ～ {int(st.session_state.settings['search_end_hour'])}:00")
             
-            if st.button("💾 設定を保存", use_container_width=True):
+            if st.button("💾 設定を保存", width="stretch"):
                 save_settings(st.session_state.settings)
                 st.success("設定を保存しました")
 
@@ -782,10 +763,10 @@ def main():
                 data=api_csv,
                 file_name=f"api_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv",
-                use_container_width=True
+                width="stretch"
             )
         else:
-            st.button("API状況ログなし (DB1)", use_container_width=True, disabled=True)
+            st.button("API状況ログなし (DB1)", width="stretch", disabled=True)
             
         # 発見記録ログ (DB2) のダウンロード
         match_csv = get_db_csv_data("/api/logs/match_history", "match_logs")
@@ -795,57 +776,57 @@ def main():
                 data=match_csv,
                 file_name=f"match_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv",
-                use_container_width=True
+                width="stretch"
             )
         else:
-            st.button("発見記録ログなし (DB2)", use_container_width=True, disabled=True)
+            st.button("発見記録ログなし (DB2)", width="stretch", disabled=True)
 
         st.markdown("---")
         # API状況表示 (DB1)
-        if st.button("📋 API状況を画面に表示 (DB1)", use_container_width=True):
+        if st.button("📋 API状況を画面に表示 (DB1)", width="stretch"):
             st.session_state.show_api_logs = get_api_logs()
             st.session_state.show_history = None
 
         # 発見履歴表示 (DB2)
-        if st.button("📋 発見履歴を画面に表示 (DB2)", use_container_width=True):
+        if st.button("📋 発見履歴を画面に表示 (DB2)", width="stretch"):
             history = get_match_history()
             st.session_state.show_history = history if history else []
             st.session_state.show_api_logs = None
 
         st.markdown("---")
         # 削除ボタン (DB1)
-        if st.button("🗑️ API状況ログを消去 (DB1)", use_container_width=True):
+        if st.button("🗑️ API状況ログを消去 (DB1)", width="stretch"):
             st.session_state.confirm_delete_db1 = True
         
         if st.session_state.confirm_delete_db1:
             st.warning("DB1のログをすべて消去しますか？")
             c1, c2 = st.columns(2)
-            if c1.button("はい、削除 (DB1)", key="db1_yes", use_container_width=True):
+            if c1.button("はい、削除 (DB1)", key="db1_yes", width="stretch"):
                 success, msg = clear_api_logs()
                 st.session_state.confirm_delete_db1 = False
                 st.session_state.show_api_logs = None
                 if success: st.toast(msg)
                 else: st.error(msg)
                 st.rerun()
-            if c2.button("いいえ", key="db1_no", use_container_width=True):
+            if c2.button("いいえ", key="db1_no", width="stretch"):
                 st.session_state.confirm_delete_db1 = False
                 st.rerun()
 
         # 削除ボタン (DB2)
-        if st.button("🗑️ 発見履歴を消去 (DB2)", use_container_width=True):
+        if st.button("🗑️ 発見履歴を消去 (DB2)", width="stretch"):
             st.session_state.confirm_delete_db2 = True
 
         if st.session_state.confirm_delete_db2:
             st.warning("DB2の履歴をすべて消去しますか？")
             c1, c2 = st.columns(2)
-            if c1.button("はい、削除 (DB2)", key="db2_yes", use_container_width=True):
+            if c1.button("はい、削除 (DB2)", key="db2_yes", width="stretch"):
                 success, msg = clear_match_history()
                 st.session_state.confirm_delete_db2 = False
                 st.session_state.show_history = None
                 if success: st.toast(msg)
                 else: st.error(msg)
                 st.rerun()
-            if c2.button("いいえ", key="db2_no", use_container_width=True):
+            if c2.button("いいえ", key="db2_no", width="stretch"):
                 st.session_state.confirm_delete_db2 = False
                 st.rerun()
     
@@ -876,13 +857,13 @@ def main():
         
         col_act1, col_act2 = st.columns(2)
         with col_act1:
-            if st.button("🔎 今すぐ検索", use_container_width=True, type="primary"):
+            if st.button("🔎 今すぐ検索", width="stretch", type="primary"):
                 # 手動検索は強制実行 (force=True)
                 execute_search_batch(force=True)
         
         with col_act2:
             if st.session_state.auto_loop:
-                if st.button("⏹️ 自動検索を停止", use_container_width=True, type="secondary"):
+                if st.button("⏹️ 自動検索を停止", width="stretch", type="secondary"):
                     st.session_state.settings["auto_loop"] = False
                     st.session_state.auto_loop = False
                     save_settings(st.session_state.settings)
@@ -894,7 +875,7 @@ def main():
                     st.session_state.last_run_time = None
                     save_settings(st.session_state.settings)
                 
-                st.button("🔄 自動検索を開始", use_container_width=True, on_click=start_auto_loop)
+                st.button("🔄 自動検索を開始", width="stretch", on_click=start_auto_loop)
 
         if st.session_state.auto_loop:
             current_interval_sec = get_effective_interval_seconds()
@@ -904,20 +885,7 @@ def main():
                 search_start_hour = int(st.session_state.settings.get("search_start_hour", DEFAULT_SEARCH_START_HOUR))
                 search_end_hour = int(st.session_state.settings.get("search_end_hour", DEFAULT_SEARCH_END_HOUR))
                 st.warning(f"現在時間外です。検索は {search_start_hour}:00～{search_end_hour}:00 の間に行われます。")
-
-            # 実行判定 (初回 または 指定時間が経過)
-            should_run = False
-            now = datetime.datetime.now()
-            if st.session_state.last_run_time is None:
-                should_run = True
-            else:
-                elapsed = (now - st.session_state.last_run_time).total_seconds()
-                if elapsed >= current_interval_sec:
-                    should_run = True
-
-            # 進行状況表示用のプレースホルダー
-            status_container = st.empty()
-            st.caption("※ 自動検索実行中。上の停止ボタンで解除できます。")
+            st.info("※ バックエンドで自律的に実行されています。")
 
     else:
         st.info("📝 左のサイドバーからキーワードを追加してください")
@@ -929,7 +897,7 @@ def main():
         if st.session_state.show_api_logs:
             st.dataframe(
                 st.session_state.show_api_logs,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
         else:
@@ -945,7 +913,7 @@ def main():
         if st.session_state.show_history:
             st.dataframe(
                 st.session_state.show_history,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
         else:
@@ -1018,32 +986,5 @@ def main():
                 for keyword in error_keywords:
                     st.subheader(keyword)
                     display_result_card(keyword, st.session_state.stock_results[keyword])
-
-    # 自動検索モード時の待機処理 (全ての描画が終わった後に行う)
-    if st.session_state.auto_loop and st.session_state.last_run_time:
-        total_sec = get_effective_interval_seconds()
-        now = datetime.datetime.now()
-        elapsed = (now - st.session_state.last_run_time).total_seconds()
-        
-        if elapsed < total_sec:
-            # 画面更新
-            remaining_sec = max(0, int(total_sec - elapsed))
-            progress = min(1.0, max(0.0, elapsed / total_sec))
-            
-            # 稼働時間内かどうかでメッセージを切り替え
-            if is_within_search_window():
-                status_text = f"次回の検索まであと {remaining_sec} 秒"
-            else:
-                status_text = f"稼働時間外のため待機中... 次の判定まで {remaining_sec} 秒"
-            
-            status_container.progress(progress, text=status_text)
-            
-            # 長時間のブロッキングを避けるため、ループではなく1秒待機してrerunします。
-            # これによりセッションの安定性が向上し、内部的なKeyError（$$WIDGET_ID）を防ぐことができます。
-            time.sleep(1)
-        
-        st.rerun()
-
-
 if __name__ == "__main__":
     main()
