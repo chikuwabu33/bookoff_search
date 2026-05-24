@@ -71,7 +71,7 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://bookoff_search_backend:8000")
 WEBHOOK_URL = "https://trigger.macrodroid.com/44e2df0f-7ca1-48e3-9d14-74434fa947e8/BOOKOFF"
 
 # キーワード保存用ファイル
-DATA_DIR = os.getenv("DATA_DIR", "data")
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 KEYWORDS_FILE = os.path.join(DATA_DIR, "keywords.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json") # 設定ファイルはローカルに保持
 
