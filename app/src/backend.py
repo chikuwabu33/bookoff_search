@@ -88,7 +88,7 @@ if BACKEND_URL:
     logger.info(f"Backend URL configured: {BACKEND_URL}")
 
 # グローバルプロキシ変数
-BOOKOFF_PROXY_URL = os.getenv("BOOKOFF_PROXY_URL", None)
+# BOOKOFF_PROXY_URL = os.getenv("BOOKOFF_PROXY_URL", None)
 
 # グローバルセッション（複数のリクエスト間でクッキーを保持するために必要）
 _global_bookoff_session = None
@@ -112,10 +112,10 @@ def get_global_bookoff_session():
         _global_bookoff_session.headers['DNT'] = '1'
         _global_bookoff_session.headers['TE'] = 'trailers'
 
-        if BOOKOFF_PROXY_URL:
-            _global_bookoff_session.proxies = {"http": BOOKOFF_PROXY_URL, "https": BOOKOFF_PROXY_URL}
-        else:
-            _global_bookoff_session.proxies = {}
+#         if BOOKOFF_PROXY_URL:
+#             _global_bookoff_session.proxies = {"http": BOOKOFF_PROXY_URL, "https": BOOKOFF_PROXY_URL}
+#         else:
+#             _global_bookoff_session.proxies = {}
 
         # 初回セッション化時に根ページをフェッチしてクッキーを取得、その後簡単な検索もする
 #        try:
@@ -339,9 +339,12 @@ async def keep_alive_loop():
 
     while True:
         try:
-            # Renderの15分制限に対し、余裕を持って10分（600秒）おきに実行
-            resp = requests.get(f"{BACKEND_URL}/health", timeout=15)
-            logger.debug(f"Keep-alive ping sent: {resp.status_code}")
+            # requests.get は同期処理のため、asyncio.to_thread を使用してイベントループのブロックを防ぎます。
+            # これにより、バックグラウンドで検索が動いていてもヘルスチェックに正しく応答できるようになります。
+            # また、Renderの内部ネットワークの遅延を考慮し、タイムアウトを 30秒 に延長します。
+            url = BACKEND_URL.rstrip("/") + "/health"
+            resp = await asyncio.to_thread(requests.get, url, timeout=30)
+            logger.debug(f"Keep-alive ping sent to {url}: {resp.status_code}")
         except Exception as e:
             logger.warning(f"Keep-alive ping failed: {e}")
         
@@ -364,7 +367,7 @@ async def lifespan(app: FastAPI):
             logger.error(f"CRITICAL: データベースディレクトリへの書き込み権限がありません: {data_dir} - {e}")
 
     init_db_tables()
-    setup_automatic_proxy()
+    # setup_automatic_proxy()
 
     # タスクの管理
     search_task = asyncio.create_task(background_search_loop())
@@ -382,65 +385,65 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="BOOKOFF Search API", version="1.0.0", lifespan=lifespan)
 
-def setup_automatic_proxy():
-    """
-    CyberSyndrome (https://www.cybersyndrome.net/) からプロキシリストを取得し、
-    BOOKOFFへのアクセスが可能なプロキシを自動探索してグローバル変数に設定します。
-    """
-    global BOOKOFF_PROXY_URL
-    
-    # 環境変数ですでに指定されている場合はそれを優先する（オプション）
-    if BOOKOFF_PROXY_URL:
-        logger.info(f"環境変数からプロキシを使用します: {BOOKOFF_PROXY_URL}")
-        return
-
-    logger.info("自動プロキシ探索を開始します: https://www.cybersyndrome.net/plr6.html")
-    source_url = "https://www.cybersyndrome.net/plr6.html"
-    test_target = "https://shopping.bookoff.co.jp/"
-    
-    try:
-        resp = requests.get(source_url, headers=get_random_headers(), timeout=15)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.content, "html.parser")
-        
-        # プロキシ候補の抽出
-        candidates = []
-        # CyberSyndromeの構造に合わせてテーブル行を解析
-        rows = soup.find_all("tr")
-        for row in rows:
-            cols = row.find_all("td")
-            # 通常、2列目にIP:Port、3列目に匿名性ランクがある
-            if len(cols) >= 3:
-                address = cols[1].get_text(strip=True)
-                anonymity = cols[2].get_text(strip=True)
-                
-                # IP:Portの形式チェックと匿名性Dの除外
-                if ":" in address and "D" not in anonymity:
-                    candidates.append(address)
-
-        logger.info(f"{len(candidates)} 件のプロキシ候補が見つかりました。接続テストを開始します...")
-
-        for addr in candidates[:20]:  # 上位20件を試行
-            proxy_url = f"http://{addr}"
-            try:
-                # 実際にBOOKOFFにアクセスできるかテスト（タイムアウトは短めに設定）
-                test_resp = requests.Session()
-                test_resp.trust_env = False
-                test_resp.headers.update(get_random_headers())
-                test_resp.headers['Accept-Encoding'] = 'gzip, deflate, br'
-                test_resp = test_resp.get(test_target, 
-                                         proxies={"http": proxy_url, "https": proxy_url}, 
-                                         timeout=7)
-                if test_resp.status_code == 200:
-                    logger.info(f"使用可能なプロキシを発見しました: {proxy_url}")
-                    BOOKOFF_PROXY_URL = proxy_url
-                    return
-            except Exception:
-                continue
-                
-        logger.warning("使用可能なプロキシが見つかりませんでした。プロキシなしで続行します。")
-    except Exception as e:
-        logger.error(f"プロキシリストの取得中にエラーが発生しました: {e}")
+# def setup_automatic_proxy():
+#     """
+#     CyberSyndrome (https://www.cybersyndrome.net/) からプロキシリストを取得し、
+#     BOOKOFFへのアクセスが可能なプロキシを自動探索してグローバル変数に設定します。
+#     """
+#     global BOOKOFF_PROXY_URL
+#     
+#     # 環境変数ですでに指定されている場合はそれを優先する（オプション）
+#     if BOOKOFF_PROXY_URL:
+#         logger.info(f"環境変数からプロキシを使用します: {BOOKOFF_PROXY_URL}")
+#         return
+# 
+#     logger.info("自動プロキシ探索を開始します: https://www.cybersyndrome.net/plr6.html")
+#     source_url = "https://www.cybersyndrome.net/plr6.html"
+#     test_target = "https://shopping.bookoff.co.jp/"
+#     
+#     try:
+#         resp = requests.get(source_url, headers=get_random_headers(), timeout=15)
+#         resp.raise_for_status()
+#         soup = BeautifulSoup(resp.content, "html.parser")
+#         
+#         # プロキシ候補の抽出
+#         candidates = []
+#         # CyberSyndromeの構造に合わせてテーブル行を解析
+#         rows = soup.find_all("tr")
+#         for row in rows:
+#             cols = row.find_all("td")
+#             # 通常、2列目にIP:Port、3列目に匿名性ランクがある
+#             if len(cols) >= 3:
+#                 address = cols[1].get_text(strip=True)
+#                 anonymity = cols[2].get_text(strip=True)
+#                 
+#                 # IP:Portの形式チェックと匿名性Dの除外
+#                 if ":" in address and "D" not in anonymity:
+#                     candidates.append(address)
+# 
+#         logger.info(f"{len(candidates)} 件のプロキシ候補が見つかりました。接続テストを開始します...")
+# 
+#         for addr in candidates[:20]:  # 上位20件を試行
+#             proxy_url = f"http://{addr}"
+#             try:
+#                 # 実際にBOOKOFFにアクセスできるかテスト（タイムアウトは短めに設定）
+#                 test_resp = requests.Session()
+#                 test_resp.trust_env = False
+#                 test_resp.headers.update(get_random_headers())
+#                 test_resp.headers['Accept-Encoding'] = 'gzip, deflate, br'
+#                 test_resp = test_resp.get(test_target, 
+#                                          proxies={"http": proxy_url, "https": proxy_url}, 
+#                                          timeout=7)
+#                 if test_resp.status_code == 200:
+#                     logger.info(f"使用可能なプロキシを発見しました: {proxy_url}")
+#                     BOOKOFF_PROXY_URL = proxy_url
+#                     return
+#             except Exception:
+#                 continue
+#                 
+#         logger.warning("使用可能なプロキシが見つかりませんでした。プロキシなしで続行します。")
+#     except Exception as e:
+#         logger.error(f"プロキシリストの取得中にエラーが発生しました: {e}")
 
 # Pydantic models for log responses (for API endpoints)
 class ApiLogResponse(BaseModel):
@@ -568,10 +571,10 @@ def initialize_bookoff_session(session: requests.Session, headers: dict):
     session.headers.update(headers)
     session.headers['Accept-Encoding'] = 'gzip, deflate, br'
 
-    if BOOKOFF_PROXY_URL:
-        session.proxies = {"http": BOOKOFF_PROXY_URL, "https": BOOKOFF_PROXY_URL}
-    else:
-        session.proxies = {}
+#     if BOOKOFF_PROXY_URL:
+#         session.proxies = {"http": BOOKOFF_PROXY_URL, "https": BOOKOFF_PROXY_URL}
+#     else:
+#         session.proxies = {}
 
     # 少しだけランダムな待機を挿入して、自然なブラウジング挙動を模倣
     time.sleep(random.uniform(0.5, 1.5))
@@ -688,7 +691,8 @@ async def fetch_with_retry(url: str, headers: dict = None, retries: int = 5, bac
             request_headers['Sec-GPC'] = "1"
 
             try:
-                response = session.get(url, headers=request_headers, timeout=20)
+                # 検索処理も同様にスレッド化して、サーバー全体の応答性を維持します
+                response = await asyncio.to_thread(session.get, url, headers=request_headers, timeout=30)
                 
                 # もし 503 や 403 でブロックされた場合、Playwright に切り替えてリトライ
                 if response.status_code in status_forcelist or response.status_code == 403:
