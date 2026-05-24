@@ -11,14 +11,22 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/bookoff_search.db")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
+# Supabaseのコネクションプーラー (ポート 6543) を使用する場合の対応
+# トランザクションモードでは prepared statements を無効にする必要がある
+if ":6543" in DATABASE_URL and "prepared_statements" not in DATABASE_URL:
+    separator = "&" if "?" in DATABASE_URL else "?"
+    DATABASE_URL += f"{separator}prepared_statements=false"
+
 # SQLAlchemyエンジンの作成
 connect_args = {}
 # SQLiteを使用する場合のみ、スレッド間での同一接続許可設定が必要
 if DATABASE_URL.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
 elif DATABASE_URL.startswith("postgresql"):
-    # SupabaseなどのリモートPostgres接続時にSSLを強制する
-    connect_args = {"sslmode": "require"}
+    # リモートPostgres接続時にSSLを強制
+    # connect_args ではなく URL パラメータで指定することが推奨される場合もありますが
+    # ここでは既存のロジックを維持しつつ安定性を高めます
+    connect_args = {"sslmode": "require", "connect_timeout": 10}
 
 engine = create_engine(
     DATABASE_URL,
