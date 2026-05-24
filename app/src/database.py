@@ -27,7 +27,7 @@ elif DATABASE_URL.startswith("postgresql"):
 # SQLAlchemy 側のプーリングを無効化し、プーラー側での管理に任せるのが安全です
 engine_kwargs = {"connect_args": connect_args}
 if ":6543" in DATABASE_URL:
-    engine_kwargs["pool_class"] = NullPool
+    engine_kwargs["poolclass"] = NullPool
 else:
     engine_kwargs["pool_pre_ping"] = True
 
