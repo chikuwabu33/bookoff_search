@@ -3,6 +3,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import event
+from sqlalchemy.pool import NullPool
 
 # 環境変数からDB接続情報を取得。デフォルトはローカルSQLite
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/bookoff_search.db")
@@ -10,12 +11,6 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/bookoff_search.db")
 # RenderやSupabaseなどの環境で "postgres://" となっている場合に "postgresql://" に変換する
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
-# Supabaseのコネクションプーラー (ポート 6543) を使用する場合の対応
-# トランザクションモードでは prepared statements を無効にする必要がある
-if ":6543" in DATABASE_URL and "prepared_statements" not in DATABASE_URL:
-    separator = "&" if "?" in DATABASE_URL else "?"
-    DATABASE_URL += f"{separator}prepared_statements=false"
 
 # SQLAlchemyエンジンの作成
 connect_args = {}
@@ -28,10 +23,17 @@ elif DATABASE_URL.startswith("postgresql"):
     # ここでは既存のロジックを維持しつつ安定性を高めます
     connect_args = {"sslmode": "require", "connect_timeout": 10}
 
+# Supabaseのコネクションプーラー (ポート 6543) 使用時は NullPool を使用して
+# SQLAlchemy 側のプーリングを無効化し、プーラー側での管理に任せるのが安全です
+engine_kwargs = {"connect_args": connect_args}
+if ":6543" in DATABASE_URL:
+    engine_kwargs["pool_class"] = NullPool
+else:
+    engine_kwargs["pool_pre_ping"] = True
+
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,
-    connect_args=connect_args
+    **engine_kwargs
 )
 
 # SQLiteのパフォーマンスと並行性を向上させる設定
