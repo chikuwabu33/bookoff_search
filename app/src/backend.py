@@ -256,6 +256,8 @@ async def background_search_loop():
     
     while True:
         try:
+            logger.info("--- 自律検索サイクルを開始します ---")
+
             # 設定とキーワードの読み込み
             settings = {}
             if os.path.exists(SETTINGS_FILE):
@@ -306,15 +308,21 @@ async def background_search_loop():
                                             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                                                 json.dump(settings, f, ensure_ascii=False, indent=2)
                                             last_sent = today_str # ループ内での重複送信防止
+                            logger.info(f"自律検索完了: {len(keywords)} 件の処理が終わりました")
                         except Exception as e:
                             logger.error(f"自律検索ループ内エラー: {e}")
                             log_api_call(db, "background_auto_search", 500)
                         finally:
                             db.close()
+                    else:
+                        logger.info("検索キーワードが登録されていないため、スキップします")
                 else:
-                    logger.debug("自律検索: 現在は検索時間外です")
-            
+                    logger.info(f"自律検索スキップ: 現在は検索時間外です ({start_hour}:00 - {end_hour}:00 JST)")
+            else:
+                logger.info("自律検索スキップ: 自動実行設定(auto_loop)がオフになっています")
+
             # 次の実行まで待機
+            logger.info(f"次の検索まで {interval} 秒待機します...")
             await asyncio.sleep(max(10, interval))
 
         except asyncio.CancelledError:
@@ -344,7 +352,7 @@ async def keep_alive_loop():
             # また、Renderの内部ネットワークの遅延を考慮し、タイムアウトを 30秒 に延長します。
             url = BACKEND_URL.rstrip("/") + "/health"
             resp = await asyncio.to_thread(requests.get, url, timeout=30)
-            logger.debug(f"Keep-alive ping sent to {url}: {resp.status_code}")
+            logger.info(f"Keep-alive ping sent: {resp.status_code}")
         except Exception as e:
             logger.warning(f"Keep-alive ping failed: {e}")
         
