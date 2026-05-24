@@ -264,13 +264,18 @@ async def background_search_loop():
                 try:
                     with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                         settings = json.load(f)
+                    logger.info(f"設定ファイル {os.path.abspath(SETTINGS_FILE)} を読み込みました")
                 except Exception as e:
                     logger.error(f"設定ファイル読み込み失敗: {e}")
+            else:
+                logger.warning(f"設定ファイルが見つかりません: {os.path.abspath(SETTINGS_FILE)} (デフォルト設定を使用します)")
 
             auto_loop = settings.get("auto_loop", False)
             interval = settings.get("interval_seconds", 60)
             start_hour = settings.get("search_start_hour", 8)
             end_hour = settings.get("search_end_hour", 17)
+            
+            logger.info(f"動作設定を反映: auto_loop={auto_loop}, interval={interval}s, search_window={start_hour}:00-{end_hour}:00 JST")
 
             if auto_loop:
                 if is_within_search_time(start_hour, end_hour):
@@ -317,7 +322,7 @@ async def background_search_loop():
                     else:
                         logger.info("検索キーワードが登録されていないため、スキップします")
                 else:
-                    logger.info(f"自律検索スキップ: 現在は検索時間外です ({start_hour}:00 - {end_hour}:00 JST)")
+                    logger.info(f"検索時間外（{start_hour}:00～{end_hour}:00 JST）のため、現在は検索を実行しません。現在時刻: {get_jst_now().strftime('%H:%M')} JST")
             else:
                 logger.info("自律検索スキップ: 自動実行設定(auto_loop)がオフになっています")
 
