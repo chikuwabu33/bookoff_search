@@ -75,7 +75,15 @@ DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 KEYWORDS_FILE = os.path.join(DATA_DIR, "keywords.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json") # 設定ファイルはローカルに保持
 
-os.makedirs(DATA_DIR, exist_ok=True)
+# データディレクトリの作成（権限エラー時はカレントディレクトリの 'data' を使用）
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+except (PermissionError, OSError):
+    logger.warning(f"ディレクトリ {DATA_DIR} の作成に失敗しました。カレントディレクトリの 'data' を使用します。")
+    DATA_DIR = "data"
+    os.makedirs(DATA_DIR, exist_ok=True)
+    KEYWORDS_FILE = os.path.join(DATA_DIR, "keywords.json")
+    SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 
 def reset_global_api_session():
     """

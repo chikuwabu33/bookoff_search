@@ -29,6 +29,15 @@ JST = timezone(timedelta(hours=9))
 
 # 設定共有用ファイルパス
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
+
+# 起動時にディレクトリ作成を試行し、失敗した場合はフォールバック
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+except (PermissionError, OSError):
+    logger.warning(f"ディレクトリ {DATA_DIR} の作成に失敗しました。カレントディレクトリの 'data' を使用します。")
+    DATA_DIR = "data"
+    os.makedirs(DATA_DIR, exist_ok=True)
+
 KEYWORDS_FILE = os.path.join(DATA_DIR, "keywords.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 WEBHOOK_URL = "https://trigger.macrodroid.com/44e2df0f-7ca1-48e3-9d14-74434fa947e8/BOOKOFF"
