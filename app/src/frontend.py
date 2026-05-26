@@ -85,6 +85,8 @@ except (PermissionError, OSError):
     KEYWORDS_FILE = os.path.join(DATA_DIR, "keywords.json")
     SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 
+logger.info(f"データディレクトリとして {os.path.abspath(DATA_DIR)} を使用します")
+
 def reset_global_api_session():
     """
     Streamlit のセッションステートに保持されている API セッションをクリアします。
@@ -134,42 +136,43 @@ def get_global_api_session():
     return st.session_state._global_api_session
 
 def load_settings() -> Dict:
-    default_settings = {
-        "interval_seconds": 60, # デフォルト60秒
-        "last_notification_sent_date": "",
+    """バックエンド API から現在の設定を取得します。"""
+    try:
+        session = get_global_api_session()
+        response = session.get(f"{BACKEND_URL}/api/config/settings", timeout=10)
+        if response.status_code == 200:
+            logger.info("Settings successfully loaded from API")
+            return response.json()
+    except Exception as e:
+        logger.error(f"Error loading settings from API: {e}")
+    
+    # 失敗した場合は最小限のデフォルト値を返す
+    return {
+        "interval_seconds": 60,
         "search_start_hour": DEFAULT_SEARCH_START_HOUR,
         "search_end_hour": DEFAULT_SEARCH_END_HOUR,
-        "auto_loop": False # 自動検索のON/OFF状態も保存対象に追加
+        "auto_loop": False,
+        "last_notification_sent_date": ""
     }
-    abs_path = os.path.abspath(SETTINGS_FILE)
-    logger.info(f"Attempting to load settings from: {abs_path}")
-    if os.path.exists(abs_path):
-        try:
-            with open(abs_path, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-                default_settings.update(saved)
-                logger.info(f"Settings successfully loaded from {abs_path}")
-                return default_settings
-        except Exception as e:
-            logger.error(f"Error loading settings from {abs_path}: {e}")
-    return default_settings
-
 
 def save_settings(settings: Dict):
     """
-    現在の設定を settings.json ファイルに保存します。
+    現在の設定をバックエンド API 経由でデータベースに保存します。
 
     Args:
         settings (Dict): 保存する設定内容の辞書
     """
-    abs_path = os.path.abspath(SETTINGS_FILE)
-    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
     try:
-        with open(abs_path, "w", encoding="utf-8") as f:
-            json.dump(settings, f, ensure_ascii=False, indent=2)
-            logger.info(f"Settings successfully saved to {abs_path}")
+        session = get_global_api_session()
+        response = session.post(f"{BACKEND_URL}/api/config/settings", json=settings, timeout=10)
+        if response.status_code == 200:
+            logger.info("Settings successfully saved via API")
+            return True
+        else:
+            logger.error(f"Failed to save settings: {response.status_code}")
     except Exception as e:
-        logger.error(f"Error saving settings to {abs_path}: {e}")
+        logger.error(f"Error saving settings via API: {e}")
+    return False
 
 
 def is_within_search_window() -> bool:
