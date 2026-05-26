@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from database import Base
 from datetime import datetime, timedelta, timezone
 
@@ -25,3 +25,14 @@ class MatchLog(Base):
     timestamp = Column(DateTime, default=get_jst_now, index=True)
     keyword = Column(String, index=True)
     title = Column(String, index=True)
+
+class SystemSetting(Base):
+    """システム設定のモデル"""
+    __tablename__ = "system_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    interval_seconds = Column(Integer, default=60)
+    last_notification_sent_date = Column(String, default="")
+    search_start_hour = Column(Integer, default=8)
+    search_end_hour = Column(Integer, default=17)
+    auto_loop = Column(Boolean, default=False)

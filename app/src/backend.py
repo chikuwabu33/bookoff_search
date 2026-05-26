@@ -20,12 +20,26 @@ import unicodedata
 import re
 import os
 import json
+import logging
 from dataclasses import dataclass
+from typing import List
 from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
 from database import get_db, init_db_tables
-from models import ApiLog, MatchLog
+from models import ApiLog, MatchLog, SystemSetting
 
 JST = timezone(timedelta(hours=9))
+
+# ロギング設定を先頭に移動 (NameError回避と起動ログ確保のため)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+# .envファイルから環境変数を読み込む (DATA_DIRの評価前に実行)
+load_dotenv()
 
 # 設定共有用ファイルパス
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
@@ -41,6 +55,8 @@ except (PermissionError, OSError):
 KEYWORDS_FILE = os.path.join(DATA_DIR, "keywords.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 WEBHOOK_URL = "https://trigger.macrodroid.com/44e2df0f-7ca1-48e3-9d14-74434fa947e8/BOOKOFF"
+
+logger.info(f"データディレクトリとして {os.path.abspath(DATA_DIR)} を使用します")
 
 def get_jst_now():
     """JST (日本標準時) の現在時刻を naive datetime として取得"""
@@ -68,28 +84,6 @@ def is_within_search_time(start_hour: int, end_hour: int) -> bool:
     else:
         # 例: 22時から翌日5時 (日を跨ぐ場合)
         return hour >= start_hour or hour < end_hour
-
-try:
-    from playwright.async_api import async_playwright
-    PLAYWRIGHT_AVAILABLE = True
-except ImportError:
-    PLAYWRIGHT_AVAILABLE = False
-
-# Playwrightが実行できない場合のフォールバック制御
-_playwright_failed = False
-
-from dotenv import load_dotenv # 追加
-from typing import List, Optional # Add these imports
-# ロギング設定
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger(__name__)
-
-# .envファイルから環境変数を読み込む
-load_dotenv() # 追加
 
 # バックエンドURL設定 (追加)
 BACKEND_URL = os.getenv("BACKEND_URL", None)
@@ -256,34 +250,47 @@ async def _internal_check_stock_logic(keyword: str, db: Session) -> dict:
         logger.error(f"コア在庫確認ロジックエラー: {e}")
         raise e
 
+def get_db_settings(db: Session) -> SystemSetting:
+    """データベースから現在の設定を取得します。存在しない場合はデフォルトを作成します。"""
+    setting = db.query(SystemSetting).first()
+    if not setting:
+        setting = SystemSetting(
+            interval_seconds=60,
+            search_start_hour=8,
+            search_end_hour=17,
+            auto_loop=False
+        )
+        db.add(setting)
+        db.commit()
+        db.refresh(setting)
+    return setting
+
 async def background_search_loop():
     """
     バックエンドで自律的に在庫検索を実行するバックグラウンドタスク。
-    24時間365日の稼働を想定し、settings.json の設定に基づき周期的に実行します。
+    24時間365日の稼働を想定し、データベースの設定に基づき周期的に実行します。
     """
     logger.info("自律検索バックグラウンドタスクを開始しました")
+    from database import SessionLocal
     
     while True:
+        db = SessionLocal()
         try:
             logger.info("--- 自律検索サイクルを開始します ---")
 
-            # 設定とキーワードの読み込み
-            settings = {}
-            if os.path.exists(SETTINGS_FILE):
-                try:
-                    with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                        settings = json.load(f)
-                    logger.info(f"設定ファイル {os.path.abspath(SETTINGS_FILE)} を読み込みました")
-                except Exception as e:
-                    logger.error(f"設定ファイル読み込み失敗: {e}")
-            else:
-                logger.warning(f"設定ファイルが見つかりません: {os.path.abspath(SETTINGS_FILE)} (デフォルト設定を使用します)")
-
-            auto_loop = settings.get("auto_loop", False)
-            interval = settings.get("interval_seconds", 60)
-            start_hour = settings.get("search_start_hour", 8)
-            end_hour = settings.get("search_end_hour", 17)
+            # DBから最新設定を読み込み
+            settings_obj = get_db_settings(db)
             
+            auto_loop = settings_obj.auto_loop
+            interval = settings_obj.interval_seconds
+            start_hour = settings_obj.search_start_hour
+            end_hour = settings_obj.search_end_hour
+            last_sent = settings_obj.last_notification_sent_date
+            
+            # インターバルの最小値を保証
+            if interval < 10:
+                interval = 10
+
             logger.info(f"動作設定を反映: auto_loop={auto_loop}, interval={interval}s, search_window={start_hour}:00-{end_hour}:00 JST")
 
             if auto_loop:
@@ -298,11 +305,8 @@ async def background_search_loop():
 
                     if keywords:
                         logger.info(f"自律検索開始: {len(keywords)} 件のキーワード")
-                        from database import SessionLocal
-                        db = SessionLocal()
                         try:
                             today_str = get_jst_now().date().isoformat()
-                            last_sent = settings.get("last_notification_sent_date", "")
                             
                             for i, keyword in enumerate(keywords):
                                 if i > 0:
@@ -317,17 +321,14 @@ async def background_search_loop():
                                         p = products[0]
                                         msg = f"{keyword} ({p['title'][:20]}...)"
                                         if await send_webhook_notification(msg, p['url']):
-                                            # 通知成功したら設定ファイルを更新（1日1回制限のため）
-                                            settings["last_notification_sent_date"] = today_str
-                                            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                                                json.dump(settings, f, ensure_ascii=False, indent=2)
+                                            # 通知成功したらDBを更新（1日1回制限のため）
+                                            settings_obj.last_notification_sent_date = today_str
+                                            db.commit()
                                             last_sent = today_str # ループ内での重複送信防止
                             logger.info(f"自律検索完了: {len(keywords)} 件の処理が終わりました")
                         except Exception as e:
                             logger.error(f"自律検索ループ内エラー: {e}")
                             log_api_call(db, "background_auto_search", 500)
-                        finally:
-                            db.close()
                     else:
                         logger.info("検索キーワードが登録されていないため、スキップします")
                 else:
@@ -345,6 +346,8 @@ async def background_search_loop():
         except Exception as e:
             logger.error(f"background_search_loop で致命的なエラー: {e}")
             await asyncio.sleep(60)
+        finally:
+            db.close()
 
 async def keep_alive_loop():
     """
@@ -799,6 +802,16 @@ class StockCheckResponse(BaseModel):
     match_type: str = ""  # "完全一致", "部分一致", "在庫なし"
     products: list[SearchResult] = []
 
+class SettingsSchema(BaseModel):
+    """設定情報のスキーマ"""
+    interval_seconds: int
+    search_start_hour: int
+    search_end_hour: int
+    auto_loop: bool
+    last_notification_sent_date: str = ""
+
+    class Config:
+        from_attributes = True
 
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health_check():
@@ -818,6 +831,28 @@ async def check_search_time(start_hour: int = 0, end_hour: int = 0):
         "is_within_window": is_active,
         "current_time_jst": get_jst_now().strftime("%Y-%m-%d %H:%M:%S")
     }
+
+@app.get("/api/config/settings", response_model=SettingsSchema)
+def get_settings_endpoint(db: Session = Depends(get_db)):
+    """現在のシステム設定を取得"""
+    return get_db_settings(db)
+
+@app.post("/api/config/settings")
+def update_settings_endpoint(settings: SettingsSchema, db: Session = Depends(get_db)):
+    """システム設定を更新"""
+    db_setting = get_db_settings(db)
+    db_setting.interval_seconds = settings.interval_seconds
+    db_setting.search_start_hour = settings.search_start_hour
+    db_setting.search_end_hour = settings.search_end_hour
+    db_setting.auto_loop = settings.auto_loop
+    # 通知日付はフロントエンドからリセットしたい場合以外は保持
+    if settings.last_notification_sent_date is not None:
+        db_setting.last_notification_sent_date = settings.last_notification_sent_date
+        
+    db.commit()
+    logger.info("System settings updated via API")
+    return {"message": "Settings updated successfully"}
+
 
 # --- ログ取得・削除用APIエンドポイント ---
 @app.get("/api/logs/api_calls", response_model=List[ApiLogResponse])
