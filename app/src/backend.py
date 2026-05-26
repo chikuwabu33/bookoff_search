@@ -41,6 +41,15 @@ logger = logging.getLogger(__name__)
 # .envファイルから環境変数を読み込む (DATA_DIRの評価前に実行)
 load_dotenv()
 
+try:
+    from playwright.async_api import async_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+
+# Playwrightが実行できない場合のフォールバック制御
+_playwright_failed = False
+
 # 設定共有用ファイルパス
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 
