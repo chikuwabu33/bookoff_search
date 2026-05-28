@@ -36,3 +36,10 @@ class SystemSetting(Base):
     search_start_hour = Column(Integer, default=8)
     search_end_hour = Column(Integer, default=17)
     auto_loop = Column(Boolean, default=False)
+
+class Keyword(Base):
+    """検索キーワードのモデル"""
+    __tablename__ = "keywords"
+
+    id = Column(Integer, primary_key=True, index=True)
+    word = Column(String, unique=True, index=True)
