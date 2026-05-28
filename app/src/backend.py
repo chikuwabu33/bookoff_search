@@ -26,7 +26,7 @@ from typing import List
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from database import get_db, init_db_tables
-from models import ApiLog, MatchLog, SystemSetting
+from models import ApiLog, MatchLog, SystemSetting, Keyword
 
 JST = timezone(timedelta(hours=9))
 
@@ -304,13 +304,9 @@ async def background_search_loop():
 
             if auto_loop:
                 if is_within_search_time(start_hour, end_hour):
-                    keywords = []
-                    if os.path.exists(KEYWORDS_FILE):
-                        try:
-                            with open(KEYWORDS_FILE, "r", encoding="utf-8") as f:
-                                keywords = json.load(f)
-                        except Exception as e:
-                            logger.error(f"キーワードファイル読み込み失敗: {e}")
+                    # DBからキーワード一覧を取得
+                    keyword_objs = db.query(Keyword).all()
+                    keywords = [k.word for k in keyword_objs]
 
                     if keywords:
                         logger.info(f"自律検索開始: {len(keywords)} 件のキーワード")
@@ -861,6 +857,30 @@ def update_settings_endpoint(settings: SettingsSchema, db: Session = Depends(get
     db.commit()
     logger.info("System settings updated via API")
     return {"message": "Settings updated successfully"}
+
+@app.get("/api/config/keywords", response_model=List[str])
+def get_keywords_endpoint(db: Session = Depends(get_db)):
+    """登録されているキーワード一覧を取得"""
+    keywords = db.query(Keyword).all()
+    return [k.word for k in keywords]
+
+@app.post("/api/config/keywords")
+def update_keywords_endpoint(keywords: List[str], db: Session = Depends(get_db)):
+    """キーワード一覧を更新（全入れ替え）"""
+    try:
+        # 一旦全削除
+        db.query(Keyword).delete()
+        # 新しいリストを追加
+        for word in keywords:
+            if word.strip():
+                db.add(Keyword(word=word.strip()))
+        db.commit()
+        logger.info(f"Keywords updated via API: {len(keywords)} items")
+        return {"message": "Keywords updated successfully"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to update keywords: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- ログ取得・削除用APIエンドポイント ---

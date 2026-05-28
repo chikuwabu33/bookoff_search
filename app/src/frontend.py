@@ -359,38 +359,37 @@ def send_webhook_notification(product_name: str, product_url: str, force: bool =
 
 
 def load_keywords() -> List[str]:
-    abs_path = os.path.abspath(KEYWORDS_FILE)
-    logger.info(f"Attempting to load keywords from: {abs_path}")
-    if os.path.exists(abs_path):
-        try:
-            with open(abs_path, "r", encoding="utf-8") as f:
-                keywords = json.load(f)
-                logger.info(f"Keywords successfully loaded: {len(keywords)} items from {abs_path}")
-                return keywords
-        except Exception as e:
-            logger.error(f"Error loading keywords from {abs_path}: {e}")
-            return []
-    # ファイルが存在しない場合は空のリストを返す
-    logger.warning(f"Keywords file not found at: {abs_path}")
+    """バックエンド API からキーワード一覧を取得します。"""
+    try:
+        session = get_global_api_session()
+        response = session.get(f"{BACKEND_URL}/api/config/keywords", timeout=10)
+        if response.status_code == 200:
+            keywords = response.json()
+            logger.info(f"Keywords successfully loaded from API: {len(keywords)} items")
+            return keywords
+    except Exception as e:
+        logger.error(f"Error loading keywords from API: {e}")
     return []
 
 
 def save_keywords(keywords: List[str]):
     """
-    指定されたキーワードリストを keywords.json に保存します。
+    指定されたキーワードリストをバックエンド API 経由でデータベースに保存します。
 
     Args:
         keywords (List[str]): 保存するキーワードのリスト
     """
-    if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR, exist_ok=True)
-    abs_path = os.path.abspath(KEYWORDS_FILE)
     try:
-        with open(abs_path, "w", encoding="utf-8") as f:
-            json.dump(keywords, f, ensure_ascii=False, indent=2)
-            logger.info(f"Keywords successfully saved to {abs_path}")
+        session = get_global_api_session()
+        response = session.post(f"{BACKEND_URL}/api/config/keywords", json=keywords, timeout=10)
+        if response.status_code == 200:
+            logger.info("Keywords successfully saved via API")
+            return True
+        else:
+            logger.error(f"Failed to save keywords: {response.status_code}")
     except Exception as e:
-        logger.error(f"Error saving keywords: {e}")
+        logger.error(f"Error saving keywords via API: {e}")
+    return False
 
 
 # セッションステートの初期化
