@@ -7,6 +7,34 @@
 			"command": "python -m pytest -q test/test_import_resolution.py",
 			"isBackground": false,
 			"problemMatcher": []
+		},
+		{
+			"label": "Run DB fallback test",
+			"type": "shell",
+			"command": "python -m pytest -q test/test_db_fallback.py",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run DB fallback test",
+			"type": "shell",
+			"command": "python -m pytest -q test/test_db_fallback.py",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run DB fallback test",
+			"type": "shell",
+			"command": "python -m pytest -q test/test_db_fallback.py",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run DB fallback regression tests",
+			"type": "shell",
+			"command": "python -m pytest -q test/test_db_fallback.py test/test_import_resolution.py",
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }
