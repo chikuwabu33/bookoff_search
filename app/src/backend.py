@@ -23,8 +23,13 @@ from dataclasses import dataclass
 from typing import List
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
-from database import get_db, init_db_tables
-from models import ApiLog, MatchLog, SystemSetting, Keyword
+
+try:
+    from .database import get_db, init_db_tables
+    from .models import ApiLog, MatchLog, SystemSetting, Keyword
+except ImportError:
+    from database import get_db, init_db_tables
+    from models import ApiLog, MatchLog, SystemSetting, Keyword
 
 JST = timezone(timedelta(hours=9))
 
@@ -231,7 +236,10 @@ async def background_search_loop():
     24時間365日の稼働を想定し、データベースの設定に基づき周期的に実行します。
     """
     logger.info("自律検索バックグラウンドタスクを開始しました")
-    from database import SessionLocal
+    try:
+        from .database import SessionLocal
+    except ImportError:
+        from database import SessionLocal
     
     while True:
         db = SessionLocal()

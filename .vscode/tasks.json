@@ -1,0 +1,12 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Verify import regression test",
+			"type": "shell",
+			"command": "python -m pytest -q test/test_import_resolution.py",
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}
