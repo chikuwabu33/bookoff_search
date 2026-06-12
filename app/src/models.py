@@ -1,6 +1,10 @@
 from sqlalchemy import Column, Integer, String, DateTime, Boolean
-from database import Base
 from datetime import datetime, timedelta, timezone
+
+try:
+    from .database import Base
+except ImportError:
+    from database import Base
 
 JST = timezone(timedelta(hours=9))
 
