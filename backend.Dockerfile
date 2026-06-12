@@ -47,4 +47,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 EXPOSE 8000
 
 # FastAPI バックエンドを起動
-CMD ["python", "src/backend.py"]
+# Render の場合は Docker イメージをビルドしてこのコマンドで起動します。
+CMD ["uvicorn", "src.backend:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "asyncio"]

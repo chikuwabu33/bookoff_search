@@ -37,7 +37,7 @@ BOOKOFF オンラインストア (https://shopping.bookoff.co.jp/) の検索機�
 ### ファイル構成
 
 ```
-docker-template/
+bookoff_search/
 ├── backend.Dockerfile       # FastAPI バックエンド用
 ├── frontend.Dockerfile      # Streamlit フロントエンド用
 ├── docker-compose.yml       # Docker Compose 設定（複数コンテナ定義）
@@ -45,10 +45,11 @@ docker-template/
 ├── requirements_frontend.txt         # Python 依存パッケージ
 ├── README.md               # このファイル
 └── app/
-    ├── model.py          # モデル
-    ├── database.py          # データベース
-    ├── backend.py          # FastAPI バックエンド
-    └── frontend.py         # Streamlit フロントエンド
+    └── src/
+        ├── backend.py          # FastAPI バックエンド
+        ├── database.py          # データベース
+        ├── frontend.py         # Streamlit フロントエンド
+        └── models.py          # モデル
 ```
 
 ## 必要なソフトウェア
@@ -72,6 +73,24 @@ docker compose logs -f
 # コンテナを停止
 docker compose down
 ```
+
+### Render にデプロイ
+
+バックエンドは Render の Web サービスとして単独で稼働させることができます。Render での推奨構成:
+
+- サービス種別: `Docker`
+- Dockerfile: `backend.Dockerfile`
+- ポート: `8000`
+- 環境変数:
+  - `PORT=8000`
+  - `DATABASE_URL` 例: `postgresql://user:password@hostname:5432/dbname`
+  - `DATA_DIR=/app/data`
+  - `BACKEND_URL` 例: `https://<your-render-service>.onrender.com`
+  - `TZ=Asia/Tokyo`
+
+バックエンドは `SystemSetting` と `Keyword` をデータベースで永続化し、`auto_loop` がオンのときに指定時刻内で定期検索を実行します。
+
+Render の無料プランではアイドル時にスリープする可能性があるため、365日運用を目指す場合は Render の Hobby 以上のプラン利用を推奨します。`BACKEND_URL` を公開 URL に設定すると、バックエンド自身が `/health` に定期的にアクセスして稼働継続を補助します。
 
 ## アクセス方法
 
@@ -226,13 +245,13 @@ python3 analyze_html_detail.py
 
 ```bash
 # 依存パッケージのインストール
-pip install -r requirements.txt
+pip install -r requirements_backend.txt
 
 # FastAPI バックエンド
-python app/backend.py
+python app/src/backend.py
 
 # Streamlit フロントエンド（異なるターミナル）
-streamlit run app/frontend.py
+streamlit run app/src/frontend.py
 ```
 
 ## テクノロジー

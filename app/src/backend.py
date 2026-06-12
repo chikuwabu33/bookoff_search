@@ -19,8 +19,6 @@ import urllib.parse # Keep this for search query encoding
 import unicodedata
 import re
 import os
-import json
-import logging
 from dataclasses import dataclass
 from typing import List
 from datetime import datetime, timedelta, timezone
@@ -61,8 +59,6 @@ except (PermissionError, OSError):
     DATA_DIR = "data"
     os.makedirs(DATA_DIR, exist_ok=True)
 
-KEYWORDS_FILE = os.path.join(DATA_DIR, "keywords.json")
-SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 WEBHOOK_URL = "https://trigger.macrodroid.com/44e2df0f-7ca1-48e3-9d14-74434fa947e8/BOOKOFF"
 
 logger.info(f"データディレクトリとして {os.path.abspath(DATA_DIR)} を使用します")
@@ -102,74 +98,29 @@ if BACKEND_URL:
 # グローバルプロキシ変数
 # BOOKOFF_PROXY_URL = os.getenv("BOOKOFF_PROXY_URL", None)
 
-# グローバルセッション（複数のリクエスト間でクッキーを保持するために必要）
-_global_bookoff_session = None
-
-def get_global_bookoff_session():
+def create_bookoff_session() -> requests.Session:
     """
-    BOOKOFFアクセス用のグローバルなセッションオブジェクトを取得します。
-    初回呼び出し時にセッションの初期化、ヘッダー設定、およびWAF回避のためのウォームアップを行います。
+    BOOKOFFアクセス用のセッションオブジェクトを生成します。
+    同時実行環境下でもセッション競合を避けるため、リクエストごとに新しいセッションを作成します。
 
     Returns:
         requests.Session: 初期化済みのセッションオブジェクト
     """
-    global _global_bookoff_session
-    if _global_bookoff_session is None:
-        _global_bookoff_session = requests.Session()
-        _global_bookoff_session.trust_env = False
-        headers = get_random_headers()
-        _global_bookoff_session.headers.update(headers)
-        _global_bookoff_session.headers['Accept-Encoding'] = 'gzip, deflate, br'
-        _global_bookoff_session.headers['Connection'] = 'keep-alive'
-        _global_bookoff_session.headers['DNT'] = '1'
-        _global_bookoff_session.headers['TE'] = 'trailers'
-
-#         if BOOKOFF_PROXY_URL:
-#             _global_bookoff_session.proxies = {"http": BOOKOFF_PROXY_URL, "https": BOOKOFF_PROXY_URL}
-#         else:
-#             _global_bookoff_session.proxies = {}
-
-        # 初回セッション化時に根ページをフェッチしてクッキーを取得、その後簡単な検索もする
-#        try:
-#            time.sleep(random.uniform(0.5, 1.5))
-#            resp_root = _global_bookoff_session.get("https://shopping.bookoff.co.jp/", timeout=20)
-#            logger.debug(f"Global Bookoff session initialized: root status={resp_root.status_code}")
-#            if resp_root.status_code == 503:
-#                logger.warning("Bookoff root returned 503 during session init; retrying with refreshed headers.")
-#                _global_bookoff_session.cookies.clear()
-#                _global_bookoff_session.headers.update(get_random_headers())
-#                time.sleep(random.uniform(1.0, 2.0))
-#                resp_root = _global_bookoff_session.get("https://shopping.bookoff.co.jp/", timeout=20)
-#                logger.debug(f"Global Bookoff session reinitialized: root status={resp_root.status_code}")
-#
-#            # WAFの検知を回避するために簡単な検索もしておく
-#            time.sleep(random.uniform(2.0, 4.0))
-#            warmup_url = "https://shopping.bookoff.co.jp/search/keyword/python%20"
-#            resp_search = _global_bookoff_session.get(
-#                warmup_url,
-#                headers={"Referer": "https://shopping.bookoff.co.jp/"},
-#                timeout=20
-#            )
-#            logger.debug(f"Global Bookoff session warmed up: search status={resp_search.status_code}")
-#            if resp_search.status_code == 503:
-#                logger.warning("Bookoff warmup search returned 503; retrying once.")
-#                time.sleep(random.uniform(2.0, 3.0))
-#                resp_search = _global_bookoff_session.get(
-#                    warmup_url,
-#                    headers={"Referer": "https://shopping.bookoff.co.jp/"},
-#                    timeout=20
-#                )
-#                logger.debug(f"Global Bookoff session warmed up after retry: search status={resp_search.status_code}")
-#        except Exception as e:
-#            logger.warning(f"Failed to initialize/warm up global Bookoff session: {e}")
-    return _global_bookoff_session
+    session = requests.Session()
+    session.trust_env = False
+    headers = get_random_headers()
+    session.headers.update(headers)
+    session.headers['Accept-Encoding'] = 'gzip, deflate, br'
+    session.headers['Connection'] = 'keep-alive'
+    session.headers['DNT'] = '1'
+    session.headers['TE'] = 'trailers'
+    return session
 
 async def send_webhook_notification(product_name: str, product_url: str) -> bool:
     """外部通知ツール (MacroDroid等) へ Webhook を送信します"""
     try:
         params = {"product": product_name, "url": product_url}
-        # MacroDroidなどはGETリクエストでのパラメータ受け渡しが一般的です
-        resp = requests.get(WEBHOOK_URL, params=params, timeout=10)
+        resp = await asyncio.to_thread(requests.get, WEBHOOK_URL, params=params, timeout=10)
         if resp.status_code == 200:
             logger.info(f"Webhook通知成功: {product_name}")
             return True
@@ -359,22 +310,19 @@ async def keep_alive_loop():
     Renderのスリープを防止するためのセルフピングタスク。
     10分おきに自身のヘルスチェックエンドポイントにアクセスします。
     """
-    if not BACKEND_URL:
-        logger.warning("BACKEND_URL が設定されていないため、Keep-alive タスクをスキップします。")
-        return
+    target_url = BACKEND_URL.rstrip("/") + "/health" if BACKEND_URL else "http://127.0.0.1:8000/health"
+    if BACKEND_URL:
+        logger.info(f"Keep-alive タスクを開始しました。ターゲット: {BACKEND_URL}")
+    else:
+        logger.info("Keep-alive タスクを開始しました。BACKEND_URL が未設定のため localhost を使用します。")
 
-    logger.info(f"Keep-alive タスクを開始しました。ターゲット: {BACKEND_URL}")
     # 起動直後の即時実行を避けるための待機
     await asyncio.sleep(60)
 
     while True:
         try:
-            # requests.get は同期処理のため、asyncio.to_thread を使用してイベントループのブロックを防ぎます。
-            # これにより、バックグラウンドで検索が動いていてもヘルスチェックに正しく応答できるようになります。
-            # また、Renderの内部ネットワークの遅延を考慮し、タイムアウトを 30秒 に延長します。
-            url = BACKEND_URL.rstrip("/") + "/health"
-            resp = await asyncio.to_thread(requests.get, url, timeout=30)
-            logger.info(f"Keep-alive ping sent: {resp.status_code}")
+            resp = await asyncio.to_thread(requests.get, target_url, timeout=30)
+            logger.info(f"Keep-alive ping sent: {resp.status_code} to {target_url}")
         except Exception as e:
             logger.warning(f"Keep-alive ping failed: {e}")
         
@@ -698,13 +646,13 @@ async def fetch_with_retry(url: str, headers: dict = None, retries: int = 5, bac
     status_forcelist = {429, 500, 502, 503, 504}
 
     for attempt in range(1, retries + 1):
+        session = create_bookoff_session()
         try:
             # ランダムな待機（ボット検知回避と自然なアクセス間隔）
             wait_time = random.uniform(1.0, 2.0) if attempt == 1 else random.uniform(4.0, 7.0)
             await asyncio.sleep(wait_time)
 
             # 1. まずは高速な requests で試行
-            session = get_global_bookoff_session()
             request_headers = dict(session.headers)
             if headers:
                 request_headers.update(headers)
@@ -749,7 +697,6 @@ async def fetch_with_retry(url: str, headers: dict = None, retries: int = 5, bac
 
             response.raise_for_status()
             return response
-
         except Exception as e:
             if isinstance(e, requests.exceptions.RequestException):
                 if attempt == retries:
@@ -766,6 +713,11 @@ async def fetch_with_retry(url: str, headers: dict = None, retries: int = 5, bac
             logger.warning(f"一般エラー: {e}。{sleep_seconds:.2f}s後に再試行します ({attempt}/{retries})")
             await asyncio.sleep(sleep_seconds)
             continue
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
 
     raise RuntimeError("fetch_with_retry: リトライ上限に到達しました")
 

@@ -5,12 +5,22 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import event
 from sqlalchemy.pool import NullPool
 
-# 環境変数からDB接続情報を取得。デフォルトはローカルSQLite
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/bookoff_search.db")
+# 環境変数からDB接続情報を取得。
+# Renderなどでは外部Postgresを推奨し、未設定時はDATA_DIR下にSQLiteファイルを生成します。
+DATA_DIR = os.getenv("DATA_DIR", "./data")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-# RenderやSupabaseなどの環境で "postgres://" となっている場合に "postgresql://" に変換する
-if DATABASE_URL.startswith("postgres://"):
+if not DATABASE_URL:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    DATABASE_URL = f"sqlite:///{os.path.join(DATA_DIR, 'bookoff_search.db')}"
+elif DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+elif DATABASE_URL.startswith("sqlite://"):
+    # SQLite利用時はファイルのディレクトリを事前に作成
+    sqlite_path = DATABASE_URL[10:] if DATABASE_URL.startswith("sqlite:///" ) else DATABASE_URL[9:]
+    sqlite_path = os.path.normpath(sqlite_path)
+    sqlite_dir = os.path.dirname(sqlite_path) or "."
+    os.makedirs(sqlite_dir, exist_ok=True)
 
 # SQLAlchemyエンジンの作成
 connect_args = {}
